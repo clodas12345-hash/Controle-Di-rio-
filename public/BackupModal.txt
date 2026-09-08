@@ -1,0 +1,173 @@
+import React, { useState } from 'react';
+import { X, FileSpreadsheet, Calendar as CalendarIcon, Download, ArrowLeft, Copy, Check } from 'lucide-react';
+import { GkdMobilityLogo } from './GkdMobilityLogo';
+
+export function BackupModal({ 
+  isOpen, 
+  onClose,
+  onBack,
+  onExport 
+}: { 
+  isOpen: boolean; 
+  onClose: () => void;
+  onBack?: () => void;
+  onExport: (type: 'total' | 'period', startDate?: string, endDate?: string, mode?: 'download' | 'copy') => void;
+}) {
+  const [exportType, setExportType] = useState<'total' | 'period'>('total');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  if (!isOpen) return null;
+
+  const handleExport = () => {
+    if (exportType === 'period' && (!startDate || !endDate)) {
+      alert("Por favor, selecione as datas de início e fim.");
+      return;
+    }
+    onExport(exportType, startDate, endDate, 'download');
+    onClose();
+  };
+
+  const handleCopy = () => {
+    if (exportType === 'period' && (!startDate || !endDate)) {
+      alert("Por favor, selecione as datas de início e fim.");
+      return;
+    }
+    onExport(exportType, startDate, endDate, 'copy');
+    setCopied(true);
+    setTimeout(() => {
+      setCopied(false);
+      onClose();
+    }, 2000);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+      <div className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl animate-scale-up">
+        
+        {/* Header */}
+        <div className="p-4 border-b border-zinc-800 flex items-center justify-between bg-zinc-900/40">
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 bg-zinc-900 border border-zinc-800 rounded-xl flex items-center justify-center">
+              <GkdMobilityLogo className="w-8 h-8 rounded-lg" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-zinc-100">Exportar Backup</h3>
+              <p className="text-[11px] text-zinc-400">Gere uma planilha Excel (.csv)</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            {onBack && (
+              <button 
+                onClick={onBack}
+                className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
+                title="Voltar"
+              >
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+            )}
+            <button 
+              onClick={onClose}
+              className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="p-4 space-y-4">
+          <div>
+            <label className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider block mb-2">
+              Tipo de Exportação
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setExportType('total')}
+                className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center gap-2 transition-all cursor-pointer ${
+                  exportType === 'total'
+                    ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-400'
+                    : 'bg-zinc-900/50 border-zinc-800 text-zinc-400 hover:bg-zinc-800'
+                }`}
+              >
+                <FileSpreadsheet className="w-5 h-5" />
+                <span>Total Geral</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setExportType('period')}
+                className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center gap-2 transition-all cursor-pointer ${
+                  exportType === 'period'
+                    ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-400'
+                    : 'bg-zinc-900/50 border-zinc-800 text-zinc-400 hover:bg-zinc-800'
+                }`}
+              >
+                <CalendarIcon className="w-5 h-5" />
+                <span>Por Período</span>
+              </button>
+            </div>
+          </div>
+
+          {exportType === 'period' && (
+            <div className="space-y-3 p-3 bg-zinc-900/40 rounded-xl border border-zinc-800/80 animate-fade-in">
+              <div>
+                <label className="text-[10px] font-bold text-zinc-400 block mb-1">Data Inicial</label>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500 font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-zinc-400 block mb-1">Data Final</label>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500 font-mono"
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="p-4 border-t border-zinc-800 bg-zinc-900/20 space-y-2">
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors cursor-pointer"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="px-3.5 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 border border-zinc-700 active:scale-95"
+            >
+              {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>{copied ? 'Copiado!' : 'Copiar Texto'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleExport}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-emerald-600/20 transition-all cursor-pointer flex items-center gap-1.5 active:scale-95"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Exportar CSV</span>
+            </button>
+          </div>
+          <p className="text-[10px] text-zinc-500 text-center italic">
+            Dica: Se o botão "Exportar CSV" não funcionar no seu celular, use o "Copiar Texto" e cole em um arquivo ou mensagem.
+          </p>
+        </div>
+
+      </div>
+    </div>
+  );
+}

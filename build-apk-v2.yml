@@ -1,0 +1,87 @@
+name: Build APK v2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    name: Compilar APK Android v2
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar Código do Repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Configurar Java 17 (JDK)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Aceitar Licenças e Instalar Build Tools Android
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+
+      - name: Instalar Dependências e Capacitor 6
+        run: |
+          npm install --legacy-peer-deps
+          npm install @capacitor/core@6.2.0 @capacitor/cli@6.2.0 @capacitor/android@6.2.0 @capacitor/local-notifications@6.1.1 @capacitor/geolocation@6.0.2 @capacitor/camera@6.1.2 @capacitor/filesystem@6.0.2 sharp --save-dev
+
+      - name: Compilar Aplicação Web (Vite)
+        run: npm run build
+
+      - name: Gerar Projeto Android com Nome Controle Diário
+        run: |
+          npx cap init "Controle Diário" "com.gkd.controlediario" --web-dir dist || true
+          rm -rf android
+          npx cap add android
+          npx cap sync android
+          npm run build:mobile
+
+      - name: Forçar Versão Maior no Android (find e sed)
+        run: |
+          echo "Subindo o versionCode para o número do build: ${{ github.run_number }}"
+          find . -name "build.gradle" -exec sed -i "s/versionCode [0-9]*/versionCode ${{ github.run_number }}/g" {} +
+          find . -name "build.gradle" -exec sed -i "s/versionName \"[^\"]*\"/versionName \"1.0.${{ github.run_number }}\"/g" {} +
+          find . -name "capacitor.config.json" -exec sed -i "s/\"versionCode\": [0-9]*/\"versionCode\": ${{ github.run_number }}/g" {} +
+          find . -name "app.json" -exec sed -i "s/\"versionCode\": [0-9]*/\"versionCode\": ${{ github.run_number }}/g" {} +
+          echo "=== Conferência das linhas alteradas no build.gradle ==="
+          grep -rn "versionCode" android/app/build.gradle || true
+
+      - name: Configurar Keystore Fixo para Assinatura Consistente
+        run: |
+          mkdir -p ~/.android
+          if [ -f "release.keystore" ]; then
+            cp release.keystore ~/.android/debug.keystore
+            echo "✅ Keystore fixo configurado em ~/.android/debug.keystore (garante mesma assinatura em todos os builds)"
+          fi
+
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Compilar APK Android
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Separar Arquivo APK
+        run: |
+          mkdir -p apk_output
+          cp android/app/build/outputs/apk/debug/app-debug.apk apk_output/Controle_Diario_v2.apk
+
+      - name: Publicar APK para Download (Artifacts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Controle_Diario_APK_v2
+          path: apk_output/Controle_Diario_v2.apk
+          if-no-files-found: error
