@@ -7,7 +7,6 @@ import { PermissionsModal } from './components/PermissionsModal';
 import { TollCalculator } from './components/TollCalculator';
 import { GkdMobilityLogo } from './components/GkdMobilityLogo';
 import { DeepSweepModal, DeepSweepReport } from './components/DeepSweepModal';
-import { PasteFixedExpensesModal } from './components/PasteFixedExpensesModal';
 import { MultimodalAiModal } from './components/MultimodalAiModal';
 import { ConflictResolverModal, ConflictData } from './components/ConflictResolverModal';
 import { requestNotificationPermission, sendAppNotification } from './services/notificationService';
@@ -112,7 +111,7 @@ interface DailyLog {
   isDayOff: boolean;
   
   // Rodagem & Bateria
-  sobrouBateria: number; // %
+  sobrouBateria: number | null; // %
   valorKwh: number; // R$/kWh
   capacidadeBateria: number; // kWh
   kmRodado: number;
@@ -404,6 +403,12 @@ const sanitizeDailyLog = (l: DailyLog): DailyLog => {
     if (typeof v === 'string') v = parseFloat(v.replace(',', '.'));
     return (typeof v === 'number' && !Number.isNaN(v) && Number.isFinite(v) ? Math.round(v * 100) / 100 : 0);
   };
+
+  const sanitizeNumOrNull = (v: any) => {
+    if (v === undefined || v === null || v === '' || v === -1) return null;
+    if (typeof v === 'string') v = parseFloat(v.replace(',', '.'));
+    return (typeof v === 'number' && !Number.isNaN(v) && Number.isFinite(v) ? Math.round(v * 100) / 100 : null);
+  };
   
   const dateStr = l.date || '';
   const dateMatch = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -413,7 +418,7 @@ const sanitizeDailyLog = (l: DailyLog): DailyLog => {
     ...l,
     id: safeDate,
     date: safeDate,
-    sobrouBateria: sanitizeNum(l.sobrouBateria),
+    sobrouBateria: sanitizeNumOrNull(l.sobrouBateria),
     valorKwh: sanitizeNum(l.valorKwh),
     capacidadeBateria: sanitizeNum(l.capacidadeBateria),
     kmRodado: sanitizeNum(l.kmRodado),
@@ -1111,7 +1116,6 @@ export default function App() {
   const [isKpisModalOpen, setIsKpisModalOpen] = useState(false);
   const [isEfficiencyModalOpen, setIsEfficiencyModalOpen] = useState(false);
   const [isAppShareModalOpen, setIsAppShareModalOpen] = useState(false);
-  const [isPasteFixedExpensesModalOpen, setIsPasteFixedExpensesModalOpen] = useState(false);
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const [isPermissionsModalOpen, setIsPermissionsModalOpen] = useState(() => {
     try {
@@ -1166,7 +1170,7 @@ export default function App() {
       // 1. Calculate missing battery/fuel energy cost
       if ((updated.kmRodado || 0) > 0 && (!updated.custoEnergia || updated.custoEnergia <= 0)) {
         let consumedPercent = 0;
-        if (updated.sobrouBateria > 0 && updated.sobrouBateria < 100) {
+        if (updated.sobrouBateria !== null && updated.sobrouBateria !== undefined && updated.sobrouBateria >= 0 && updated.sobrouBateria <= 100) {
           consumedPercent = 100 - updated.sobrouBateria;
         } else {
           consumedPercent = Math.min(95, ((updated.kmRodado || 0) / estAutonomy) * 100);
@@ -2132,7 +2136,7 @@ export default function App() {
           
           if ((log.kmRodado || 0) > 0) {
             let consumedPercent = 0;
-            if (log.sobrouBateria > 0 && log.sobrouBateria < 100) {
+            if (log.sobrouBateria !== null && log.sobrouBateria !== undefined && log.sobrouBateria >= 0 && log.sobrouBateria <= 100) {
               consumedPercent = 100 - log.sobrouBateria;
             } else {
               consumedPercent = Math.min(95, ((log.kmRodado || 0) / (carProfile.estimatedAutonomyKm || (isEletrico ? 300 : 450))) * 100);
@@ -2292,14 +2296,14 @@ export default function App() {
     setConfirmHighKmPrompt(false);
     setHighKmTargetDate('');
 
-    const parsedSobrou = parseNum(sobrouBateria);
+    const parsedSobrou = sobrouBateria === '' || sobrouBateria === null || sobrouBateria === undefined ? null : parseNum(sobrouBateria);
     let finalCustoEnergia = parseNum(custoEnergia);
     const parsedValKwh = parseNum(valorKwh) || parseFloat(carProfile.kwhCostRate) || 1.05;
     const parsedCap = parseNum(capacidadeBateria) || parseFloat(carProfile.batteryCapacityKwh) || 53.6;
 
     // Only auto-calculate if not overridden by user and value is empty/zero
     if (parsedKm > 0 && !isEnergyCostOverridden && finalCustoEnergia <= 0) {
-      const consumedPercent = parsedSobrou > 0 && parsedSobrou < 100 ? (100 - parsedSobrou) : Math.min(95, (parsedKm / (carProfile.estimatedAutonomyKm || 300)) * 100);
+      const consumedPercent = (parsedSobrou !== null && parsedSobrou >= 0 && parsedSobrou <= 100) ? (100 - parsedSobrou) : Math.min(95, (parsedKm / (carProfile.estimatedAutonomyKm || 300)) * 100);
       const energyConsumed = (consumedPercent / 100) * parsedCap;
       finalCustoEnergia = parseFloat((energyConsumed * parsedValKwh).toFixed(2));
     }
@@ -3268,6 +3272,7 @@ export default function App() {
                   <th className="py-3 px-3 sticky top-0 left-0 z-30 bg-[#121215] border-b border-r border-zinc-800">Data</th>
                   <th className="py-3 px-3 text-center sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Status</th>
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">KM Rodados</th>
+                  <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Bateria Rest.</th>
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">{carProfile.vehicleType === 'eletrico' ? 'Custo Bateria' : 'Custo Combustível'}</th>
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Diária Carro</th>
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Desp. Extras Carro</th>
@@ -3291,7 +3296,7 @@ export default function App() {
               <tbody className="divide-y divide-zinc-850 text-zinc-300">
                 {filteredLogs.length === 0 ? (
                   <tr>
-                    <td colSpan={18} className="py-12 text-center text-zinc-500">
+                    <td colSpan={19} className="py-12 text-center text-zinc-500">
                       Nenhum dia lançado neste mês. Clique em "Registrar Dia" para começar.
                     </td>
                   </tr>
@@ -3354,6 +3359,9 @@ export default function App() {
                         </td>
                         <td className="py-3 px-3 text-right font-mono text-zinc-300">
                           {formatKM(log.kmRodado)}
+                        </td>
+                        <td className="py-3 px-3 text-right font-mono text-zinc-300">
+                          {log.sobrouBateria !== null && log.sobrouBateria !== undefined && log.sobrouBateria >= 0 ? `${log.sobrouBateria}%` : '-'}
                         </td>
                         <td className="py-3 px-3 text-right font-mono text-amber-500/90">
                           {formatBRL(log.custoEnergia)}
@@ -3580,25 +3588,31 @@ export default function App() {
           
           {/* Calendar Heatmap/Overview Grid (Span 8/12) */}
           <div className="lg:col-span-8 bg-zinc-900/80 border border-zinc-800 rounded-2xl overflow-hidden shadow-lg transition-all">
-            <div className="w-full flex items-center justify-between p-5 bg-zinc-900 border-b border-zinc-800/80">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl">
-                  <CalendarIcon className="w-5 h-5" />
+            <div className="w-full flex items-center justify-between p-3 bg-zinc-900 border-b border-zinc-800/80">
+                <div className="flex items-center gap-3">
+                <div className="p-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl">
+                  <CalendarIcon className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="text-base font-semibold text-zinc-100 flex items-center gap-2">
+                  <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
                     {isAllYear ? `Resumo Mês a Mês (${selectedYear})` : 'Agenda e Ganhos Diários'}
                   </h3>
                   <p className="text-xs text-zinc-400">
                     {isAllYear 
                       ? 'Clique em qualquer mês para ver os detalhes diários ou alterar o período.' 
-                      : 'Calendário completo do mês. Clique em qualquer dia para adicionar ou editar o registro.'}
+                      : ''}
                   </p>
                 </div>
               </div>
+              <button
+                onClick={() => setIsAllYear(!isAllYear)}
+                className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-all"
+              >
+                {isAllYear ? 'Ver Mês Atual' : 'Ver Calendário Completo'}
+              </button>
             </div>
 
-            <div className="p-5 sm:p-6 space-y-4">
+            <div className="p-3 sm:p-4 space-y-2">
                 <div className="flex justify-between items-center">
                   {!isAllYear && ( <></> )}
                 </div>
@@ -4257,14 +4271,6 @@ export default function App() {
 
             {!isAddingFixed && (
               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsPasteFixedExpensesModalOpen(true)}
-                  className="flex items-center gap-2 px-3.5 py-2 bg-indigo-950/70 hover:bg-indigo-900/90 border border-indigo-500/50 text-indigo-200 font-bold rounded-xl text-xs transition-all shadow-md cursor-pointer"
-                  title="Copiar e colar contas do Excel, WhatsApp, extrato bancário ou relatório"
-                >
-                  <Clipboard className="w-3.5 h-3.5 text-indigo-400" /> Copiar e Colar Contas
-                </button>
                 <button
                   onClick={() => {
                     setEditingFixedId(null);
@@ -8521,16 +8527,6 @@ export default function App() {
         onClose={() => setIsDeepSweepModalOpen(false)} onBack={() => { setIsDeepSweepModalOpen(false); setIsHelpModalOpen(true); }}
         report={deepSweepReport}
         onRerun={handleDeepSweep}
-      />
-
-      {/* MODAL PARA COLAR CONTAS (EXCEL / WHATSAPP / EXTRATO) */}
-      <PasteFixedExpensesModal
-        isOpen={isPasteFixedExpensesModalOpen}
-        onClose={() => setIsPasteFixedExpensesModalOpen(false)}
-        selectedMonth={selectedMonth}
-        selectedYear={selectedYear}
-        onApplyFixedExpenses={handleApplyExtractedFixedExpenses}
-        fixedExpensesByMonth={fixedExpensesByMonth}
       />
 
       {/* MODAL DE CONFIRMAÇÃO PARA APAGAR TODOS OS DADOS DA PLANILHA */}

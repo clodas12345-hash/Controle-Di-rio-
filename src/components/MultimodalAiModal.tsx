@@ -77,9 +77,6 @@ export const MultimodalAiModal: React.FC<MultimodalAiModalProps> = ({
   const nativeCameraInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Paste Text State
-  const [pastedText, setPastedText] = useState('');
-
   // Processing & Extraction State
   const [isProcessing, setIsProcessing] = useState(false);
   const [extractionResult, setExtractionResult] = useState<any | null>(null);
@@ -429,41 +426,7 @@ export const MultimodalAiModal: React.FC<MultimodalAiModalProps> = ({
         }
       }
 
-      // Mode 3: Paste Text
-      else if (currentTab === 'paste') {
-        if (!pastedText.trim()) {
-          throw new Error('Cole algum texto ou dados antes de processar.');
-        }
-
-        const res = await fetch('/api/extract-receipt', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            textData: pastedText.trim(),
-            activeContext: {
-              selectedMonth,
-              selectedYear,
-              defaultDate: targetDateInput,
-            },
-            carProfile,
-          }),
-        });
-
-        if (!res.ok) {
-          const errJson = await res.json().catch(() => ({}));
-          throw new Error(errJson.error || 'Falha ao processar texto com IA.');
-        }
-
-        const json = await res.json();
-        resultData = (json.results && json.results.length > 0) ? json.results[0] : json;
-        
-        // Preserve fixedExpenses if present in the top-level response
-        if (json.fixedExpenses && json.fixedExpenses.length > 0) {
-          if (!resultData.results) { // If it's the item itself
-            resultData.fixedExpenses = json.fixedExpenses;
-          }
-        }
-      }
+      // Mode 3: Paste Text is disabled
 
       if (!resultData) {
         throw new Error('Nenhum dado financeiro ou operacional foi identificado.');
@@ -666,19 +629,6 @@ export const MultimodalAiModal: React.FC<MultimodalAiModalProps> = ({
               </span>
             )}
           </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('paste')}
-            className={`flex-1 py-2 px-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all ${
-              activeTab === 'paste'
-                ? 'bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/20'
-                : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
-            }`}
-          >
-            <Clipboard className="w-4 h-4" />
-            <span>Copiar & Colar</span>
-          </button>
         </div>
 
         {/* Body Content */}
@@ -858,21 +808,6 @@ export const MultimodalAiModal: React.FC<MultimodalAiModalProps> = ({
                 </div>
               )}
 
-            </div>
-          )}
-
-          {/* TAB 3: COPIAR & COLAR */}
-          {activeTab === 'paste' && (
-            <div className="space-y-3">
-              <span className="text-xs text-zinc-400 font-medium block">
-                Cole o resumo de corridas do WhatsApp, extrato da Uber/99 ou dados tabulares:
-              </span>
-              <textarea
-                value={pastedText}
-                onChange={e => setPastedText(e.target.value)}
-                placeholder="Exemplo: Uber: 8 corridas, R$ 180,50. 99: 14 corridas, R$ 260,00 com R$ 15 de gorjeta. Rodei 200 km. Bateria restante: 35%..."
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-xs text-zinc-100 placeholder-zinc-600 focus:border-emerald-500 outline-none min-h-[120px] max-h-[220px]"
-              />
             </div>
           )}
 
