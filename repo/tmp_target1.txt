@@ -1,0 +1,13 @@
+        
+        // CRITICAL: Update carProfile monthlyCarExpense based on the COMPLETE MERGED LIST
+        const totalFixed = combined.reduce((sum, e) => sum + e.value, 0);
+        setCarProfile(prev => ({ ...prev, monthlyCarExpense: totalFixed }));
+
+        // Recalculate daily rate for all logs in this month
+        const { dailyRate } = getMonthWorkDaysAndRate(selectedYear, selectedMonth, totalFixed);
+        setTimeout(() => {
+          setLogs(currentLogs => currentLogs.map(log => {
+            const [ly, lm, ld] = log.date.split('-').map(Number);
+            if (ly === selectedYear && lm === selectedMonth) {
+              const isSunday = new Date(ly, lm - 1, ld).getDay() === 0;
+              if (!log.isDayOff && !isSunday) {

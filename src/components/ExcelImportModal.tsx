@@ -15,7 +15,8 @@ import {
   Database,
   ArrowRight,
   ArrowLeft,
-  Receipt
+  Receipt,
+  Car
 } from 'lucide-react';
 import { GkdMobilityLogo } from './GkdMobilityLogo';
 
@@ -23,7 +24,8 @@ interface ExcelImportModalProps {
   isOpen: boolean;
   onClose: () => void;
   onBack?: () => void;
-  onImportData: (logs: any[], fixedExpenses?: any[]) => void;
+  onImportData: (logs: any[], fixedExpenses?: any[], carProfile?: any) => void;
+  carProfile?: any;
 }
 
 interface ParsedResult {
@@ -36,18 +38,256 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
   isOpen,
   onClose,
   onBack,
-  onImportData
+  onImportData,
+  carProfile: initialCarProfile
 }) => {
   const [activeTab, setActiveTab] = useState<'file' | 'paste'>('file');
   const [pastedText, setPastedText] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [results, setResults] = useState<ParsedResult[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [importSummary, setImportSummary] = useState<{ datesFound: number; totalEarnings: number; fixedExpensesFound: number } | null>(null);
+  const [importSummary, setImportSummary] = useState<{ 
+    datesFound: number; 
+    totalEarnings: number; 
+    fixedExpensesFound: number;
+    carModelFound?: string;
+  } | null>(null);
   const [mappingInfo, setMappingInfo] = useState<{[key: string]: any}>({});
+  const [directBackupData, setDirectBackupData] = useState<{
+    dailyLogs: any[];
+    fixedExpenses: any[];
+    carProfile?: any;
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
+
+  // Extração direta de arquivos JSON de backup completo (100% de integridade)
+  const extractBackupDataDirectly = (json: any): { dailyLogs: any[]; fixedExpenses: any[]; carProfile?: any } => {
+    let rawLogs: any[] = [];
+    if (Array.isArray(json)) {
+      rawLogs = json;
+    } else if (Array.isArray(json.lancamentosDiarios)) {
+      rawLogs = json.lancamentosDiarios;
+    } else if (Array.isArray(json.logs)) {
+      rawLogs = json.logs;
+    }
+
+    const dailyLogs = rawLogs.map((item: any) => {
+      const date = item.date || item.data || item.id;
+      const isDayOff = Boolean(
+        item.isDayOff !== undefined ? item.isDayOff :
+        item.ehFolga !== undefined ? item.ehFolga :
+        (item.status && String(item.status).toLowerCase().includes('folga') && !String(item.status).toLowerCase().includes('trabalhad'))
+      );
+
+      const parsedKm = Number(item.kmRodado || item.km || 0);
+      const parsedBat = Number(item.sobrouBateria !== undefined ? item.sobrouBateria : (item.bateriaRestantePct !== undefined ? item.bateriaRestantePct : 0));
+      const parsedValKwh = Number(item.valorKwh || item.valorKwhUtilizadoNoDia || 0);
+      const parsedCapBat = Number(item.capacidadeBateria || item.capacidadeBateriaKwh || 0);
+      const parsedCustoEnergia = Number(item.custoEnergia || item.custoEnergiaTotal || 0);
+      const parsedDiaria = Number(item.diariaCarro || 0);
+
+      const carExpenses = {
+        wash: Number(item.carExpenses?.wash || item.despesasCarro?.wash || item.despesasCarro?.lavaJato || 0),
+        toll: Number(item.carExpenses?.toll || item.despesasCarro?.toll || item.despesasCarro?.pedagio || 0),
+        parking: Number(item.carExpenses?.parking || item.despesasCarro?.parking || item.despesasCarro?.estacionamento || 0),
+        publicCharging: Number(item.carExpenses?.publicCharging || item.despesasCarro?.publicCharging || item.despesasCarro?.recargaExterna || 0),
+        maintenance: Number(item.carExpenses?.maintenance || item.despesasCarro?.maintenance || item.despesasCarro?.manutencao || 0),
+        other: Number(item.carExpenses?.other || item.despesasCarro?.other || item.despesasCarro?.outros || 0),
+      };
+
+      const foodExpenses = {
+        lunch: Number(item.foodExpenses?.lunch || item.despesasAlimentacao?.lunch || item.despesasAlimentacao?.almoco || 0),
+        dinner: Number(item.foodExpenses?.dinner || item.despesasAlimentacao?.dinner || item.despesasAlimentacao?.jantar || 0),
+        snacks: Number(item.foodExpenses?.snacks || item.despesasAlimentacao?.snacks || item.despesasAlimentacao?.lanches || 0),
+        coffee: Number(item.foodExpenses?.coffee || item.despesasAlimentacao?.coffee || item.despesasAlimentacao?.cafe || 0),
+      };
+
+      const app99 = {
+        rides: Number(item.app99?.rides !== undefined ? item.app99.rides : (item.ganhos99?.corridas || 0)),
+        earnings: Number(item.app99?.earnings !== undefined ? item.app99.earnings : (item.ganhos99?.faturamento || 0)),
+        bonus: Number(item.app99?.bonus !== undefined ? item.app99.bonus : (item.ganhos99?.bonus || 0)),
+      };
+
+      const appUber = {
+        rides: Number(item.appUber?.rides !== undefined ? item.appUber.rides : (item.ganhosUber?.corridas || 0)),
+        earnings: Number(item.appUber?.earnings !== undefined ? item.appUber.earnings : (item.ganhosUber?.faturamento || 0)),
+        bonus: Number(item.appUber?.bonus !== undefined ? item.appUber.bonus : (item.ganhosUber?.bonus || 0)),
+      };
+
+      const appParticular = {
+        rides: Number(item.appParticular?.rides !== undefined ? item.appParticular.rides : (item.ganhosParticular?.corridas || 0)),
+        earnings: Number(item.appParticular?.earnings !== undefined ? item.appParticular.earnings : (item.ganhosParticular?.faturamento || 0)),
+      };
+
+      const recomp = Number(item.recompensasExtra || 0);
+      const outras = Number(item.outrasFontes || item.anjo || 0);
+
+      return {
+        id: date,
+        date,
+        isDayOff,
+        kmRodado: parsedKm,
+        sobrouBateria: parsedBat,
+        valorKwh: parsedValKwh,
+        capacidadeBateria: parsedCapBat,
+        custoEnergia: parsedCustoEnergia,
+        diariaCarro: parsedDiaria,
+        carExpenses,
+        foodExpenses,
+        app99,
+        appUber,
+        appParticular,
+        recompensasExtra: recomp,
+        outrasFontes: outras,
+        anjo: outras,
+        exibirNoGeral: true
+      };
+    }).filter((l: any) => Boolean(l.date));
+
+    // Despesas fixas
+    const fixedExpenses: any[] = [];
+    if (Array.isArray(json.despesasFixasLista)) {
+      json.despesasFixasLista.forEach((f: any) => {
+        const name = f.name || f.nome || '';
+        const val = f.value !== undefined ? f.value : f.valor;
+        if (name && val !== undefined) {
+          fixedExpenses.push({
+            id: f.id || `f-${Math.random()}`,
+            name: String(name).trim(),
+            value: Number(val),
+            monthKey: f.monthKey || f.mes || undefined,
+            installments: f.installments || f.parcelas || undefined
+          });
+        }
+      });
+    } else if (json.despesasFixasPorMes && typeof json.despesasFixasPorMes === 'object') {
+      Object.entries(json.despesasFixasPorMes).forEach(([mKey, list]: [string, any]) => {
+        if (Array.isArray(list)) {
+          list.forEach((f: any) => {
+            const name = f.name || f.nome || '';
+            const val = f.value !== undefined ? f.value : f.valor;
+            if (name && val !== undefined) {
+              fixedExpenses.push({
+                id: f.id || `f-${Math.random()}`,
+                name: String(name).trim(),
+                value: Number(val),
+                monthKey: mKey,
+                installments: f.installments || f.parcelas || undefined
+              });
+            }
+          });
+        }
+      });
+    }
+
+    // Perfil do Carro
+    let carProfile: any = undefined;
+    const cp = json.dadosDoVeiculo || json.carProfile;
+    if (cp && typeof cp === 'object') {
+      carProfile = {
+        vehicleType: cp.vehicleType || (cp.tipoVeiculo === 'combustao' ? 'combustao' : 'eletrico'),
+        modelName: cp.modelName || cp.modelo || '',
+        licensePlate: cp.licensePlate || cp.placa || '',
+        manufactureYear: cp.manufactureYear || cp.anoFabricacao || '',
+        color: cp.color || cp.cor || '',
+        ownershipType: cp.ownershipType || cp.tipoPropriedade || 'alugado',
+        currentKm: Number(cp.currentKm !== undefined ? cp.currentKm : (cp.kmAtualOdometro || 0)),
+        batteryCapacityKwh: Number(cp.batteryCapacityKwh !== undefined ? cp.batteryCapacityKwh : (cp.capacidadeBateriaOuTanque || 0)),
+        estimatedAutonomyKm: Number(cp.estimatedAutonomyKm !== undefined ? cp.estimatedAutonomyKm : (cp.autonomiaEstimadaKm || 0)),
+        kwhCostRate: Number(cp.kwhCostRate !== undefined ? cp.kwhCostRate : (cp.valorPagoPelaEnergiaOuCombustivel || 0)),
+        rentalOrWeeklyRate: Number(cp.rentalOrWeeklyRate !== undefined ? cp.rentalOrWeeklyRate : (cp.valorAluguelSemanal || 0)),
+        monthlyCarExpense: Number(cp.monthlyCarExpense !== undefined ? cp.monthlyCarExpense : (cp.despesaMensalCarroEstimada || 0)),
+        workScheduleType: cp.workScheduleType || cp.escalaTrabalho || 'mon_to_sat_sundays_off',
+        customWorkDays: cp.customWorkDays || cp.diasTrabalhoPersonalizados || {},
+        insurerName: cp.insurerName || cp.seguradora || '',
+        insurancePolicyNumber: cp.insurancePolicyNumber || cp.apoliceSeguro || '',
+        nextMaintenanceKm: cp.nextMaintenanceKm || cp.proximaManutencaoKm || '',
+        notes: cp.notes || cp.observacoesNotas || ''
+      };
+    }
+
+    return { dailyLogs, fixedExpenses, carProfile };
+  };
+
+  const parseBackupJsonToRows = (json: any): any[][] => {
+    const rows: any[][] = [];
+
+    // Se o JSON contém despesas fixas
+    const fixedList = json.despesasFixasLista || 
+      (json.despesasFixasPorMes && typeof json.despesasFixasPorMes === 'object'
+        ? Object.entries(json.despesasFixasPorMes).flatMap(([mKey, list]: [string, any]) => 
+            (Array.isArray(list) ? list : []).map(f => ({ ...f, monthKey: mKey }))
+          )
+        : []);
+
+    if (Array.isArray(fixedList) && fixedList.length > 0) {
+      rows.push(["DESPESAS FIXAS DO MÊS / CONTAS FIXAS", "", "", ""]);
+      rows.push(["Despesa Fixa", "Valor (R$)", "Mês / Competência", "Parcelas"]);
+      fixedList.forEach((f: any) => {
+        const name = f.nome || f.name || '';
+        const val = f.valor !== undefined ? f.valor : f.value;
+        const month = f.mes || f.monthKey || '';
+        const inst = f.parcelas || f.installments || '';
+        if (name && val !== undefined) {
+          rows.push([name, val, month, inst]);
+        }
+      });
+      rows.push(["Total Despesas Fixas", "", "", ""]);
+      rows.push(["", "", "", ""]);
+    }
+
+    // Se o JSON contém lançamentos diários
+    const dailyList = json.lancamentosDiarios || (Array.isArray(json) ? json : []);
+    if (Array.isArray(dailyList) && dailyList.length > 0) {
+      rows.push([
+        "Data", "Dia da Semana", "Status", "KM Rodado", "Bateria Restante (%)",
+        "Valor kWh", "Custo Energia", "Diária Carro", "Despesas Carro", "Alimentação",
+        "Qtd Corridas 99", "Total 99", "Qtd Corridas Uber", "Total Uber",
+        "Qtd Corridas Particular", "Total Particular", "Recompensas", "Outros",
+        "Faturamento Bruto", "Total Despesas", "Líquido"
+      ]);
+
+      dailyList.forEach((l: any) => {
+        const date = l.data || l.date;
+        if (!date) return;
+        const km = l.kmRodado || 0;
+        const bat = l.bateriaRestantePct !== undefined ? l.bateriaRestantePct : (l.sobrouBateria || 0);
+        const valKwh = l.valorKwh || 0;
+        const custoEnergia = l.custoEnergia || 0;
+        const diaria = l.diariaCarro || 0;
+        const despCarro = (l.despesasCarro?.total !== undefined ? l.despesasCarro.total : (
+          (l.carExpenses?.wash || 0) + (l.carExpenses?.toll || 0) + (l.carExpenses?.parking || 0) + (l.carExpenses?.publicCharging || 0) + (l.carExpenses?.maintenance || 0) + (l.carExpenses?.other || 0)
+        ));
+        const despAlim = (l.despesasAlimentacao?.total !== undefined ? l.despesasAlimentacao.total : (
+          (l.foodExpenses?.lunch || 0) + (l.foodExpenses?.dinner || 0) + (l.foodExpenses?.snacks || 0) + (l.foodExpenses?.coffee || 0)
+        ));
+        const rides99 = l.ganhos99?.corridas !== undefined ? l.ganhos99.corridas : (l.app99?.rides || 0);
+        const total99 = (l.ganhos99?.faturamento || l.app99?.earnings || 0) + (l.ganhos99?.bonus || l.app99?.bonus || 0);
+        const ridesUber = l.ganhosUber?.corridas !== undefined ? l.ganhosUber.corridas : (l.appUber?.rides || 0);
+        const totalUber = (l.ganhosUber?.faturamento || l.appUber?.earnings || 0) + (l.ganhosUber?.bonus || l.appUber?.bonus || 0);
+        const ridesPart = l.ganhosParticular?.corridas !== undefined ? l.ganhosParticular.corridas : (l.appParticular?.rides || 0);
+        const totalPart = l.ganhosParticular?.faturamento || l.appParticular?.earnings || 0;
+        const recomp = l.recompensasExtra || 0;
+        const outras = l.outrasFontes || 0;
+        const bruto = l.resumoDia?.faturamentoBruto || (total99 + totalUber + totalPart + recomp + outras);
+        const despTot = l.resumoDia?.totalDespesas || (custoEnergia + diaria + despCarro + despAlim);
+        const liquido = l.resumoDia?.resultadoLiquido || (bruto - despTot);
+        const status = l.status || (l.isDayOff ? "Folga" : "Trabalhado");
+
+        rows.push([
+          date, "", status, km, bat,
+          valKwh, custoEnergia, diaria, despCarro, despAlim,
+          rides99, total99, ridesUber, totalUber,
+          ridesPart, totalPart, recomp, outras,
+          bruto, despTot, liquido
+        ]);
+      });
+    }
+
+    return rows;
+  };
 
   const parseExcels = async (files: FileList) => {
     setIsProcessing(true);
@@ -60,6 +300,28 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
+
+        if (file.name.toLowerCase().endsWith('.json')) {
+          try {
+            const text = await file.text();
+            const json = JSON.parse(text);
+            const direct = extractBackupDataDirectly(json);
+            if (direct.dailyLogs.length > 0 || direct.fixedExpenses.length > 0) {
+              setDirectBackupData(direct);
+            }
+            const rows = parseBackupJsonToRows(json);
+            if (rows.length > 0) {
+              allFileResults.push({
+                sheetName: file.name,
+                data: rows
+              });
+              continue;
+            }
+          } catch (jsonErr) {
+            console.error("Erro ao ler JSON de backup:", jsonErr);
+          }
+        }
+
         const data = await file.arrayBuffer();
         const workbook = XLSX.read(data, { cellDates: true });
 
@@ -80,7 +342,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       processData(allFileResults);
     } catch (err) {
       console.error(err);
-      setError('Erro ao ler os arquivos Excel. Verifique se os arquivos não estão corrompidos.');
+      setError('Erro ao ler os arquivos Excel ou JSON. Verifique se os arquivos não estão corrompidos.');
     } finally {
       setIsProcessing(false);
     }
@@ -95,6 +357,29 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
     setImportSummary(null);
     
     try {
+      const rawText = pastedText.trim();
+
+      // Suporte direto para colar JSON de backup
+      if (rawText.startsWith('{') || rawText.startsWith('[')) {
+        try {
+          const parsedJson = JSON.parse(rawText);
+          const direct = extractBackupDataDirectly(parsedJson);
+          if (direct.dailyLogs.length > 0 || direct.fixedExpenses.length > 0) {
+            setDirectBackupData(direct);
+          }
+          const jsonRows = parseBackupJsonToRows(parsedJson);
+          if (jsonRows.length > 0) {
+            const pasteResults: ParsedResult[] = [{
+              sheetName: 'Backup JSON Colado',
+              data: jsonRows
+            }];
+            processData(pasteResults, direct);
+            setIsProcessing(false);
+            return;
+          }
+        } catch (_) {}
+      }
+
       // Split by lines, then by tabs (standard for Excel/Sheets copy-paste)
       // If it doesn't look like TSV, try CSV (semicolon or comma)
       const lines = pastedText.split(/\r?\n/).filter(line => line.trim() !== '');
@@ -120,6 +405,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
         data: data
       }];
       
+      setDirectBackupData(null);
       processData(pasteResults);
     } catch (err) {
       console.error(err);
@@ -129,23 +415,45 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
     }
   };
 
-  const processData = (allResults: ParsedResult[]) => {
-    const { dailyLogs, fixedExpenses, mappingInfo } = parseAllSheets(allResults);
+  const processData = (allResults: ParsedResult[], explicitDirect?: any) => {
+    const currentDirect = explicitDirect || directBackupData;
+    if (currentDirect && (currentDirect.dailyLogs.length > 0 || currentDirect.fixedExpenses.length > 0)) {
+      let totalEarnings = 0;
+      currentDirect.dailyLogs.forEach((log: any) => {
+        totalEarnings += ((log.appUber?.earnings || 0) + (log.app99?.earnings || 0) + (log.appParticular?.earnings || 0) + (log.recompensasExtra || 0) + (log.outrasFontes || 0));
+      });
+      setResults(allResults);
+      setImportSummary({ 
+        datesFound: currentDirect.dailyLogs.length, 
+        totalEarnings, 
+        fixedExpensesFound: currentDirect.fixedExpenses.length,
+        carModelFound: currentDirect.carProfile?.modelName
+      });
+      return;
+    }
+
+    const { dailyLogs, fixedExpenses, carProfile, mappingInfo } = parseAllSheets(allResults);
     
     let totalEarnings = 0;
     dailyLogs.forEach(log => {
-      totalEarnings += (log.appUber.earnings + log.app99.earnings + (log.appParticular?.earnings || 0));
+      totalEarnings += ((log.appUber?.earnings || 0) + (log.app99?.earnings || 0) + (log.appParticular?.earnings || 0) + (log.recompensasExtra || 0) + (log.outrasFontes || 0));
     });
 
     setResults(allResults);
     setMappingInfo(mappingInfo);
-    setImportSummary({ datesFound: dailyLogs.length, totalEarnings, fixedExpensesFound: fixedExpenses.length });
+    setImportSummary({ 
+      datesFound: dailyLogs.length, 
+      totalEarnings, 
+      fixedExpensesFound: fixedExpenses.length,
+      carModelFound: carProfile?.modelName
+    });
   };
 
   const parseAllSheets = (allResults: ParsedResult[]) => {
     const dailyLogsMap: { [date: string]: any } = {};
     const allFixedExpenses: any[] = [];
     const mappingInfo: {[key: string]: any} = {};
+    let detectedCarProfile: any = undefined;
 
     allResults.forEach(sheet => {
       let headerIdx = -1;
@@ -227,6 +535,13 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       const coffeeIdx = headerRow.findIndex(h => /café|cafe|coffee/i.test(String(h)));
       const foodTotalIdx = headerRow.findIndex(h => /alimentação|comida|food|alimentacao/i.test(String(h)));
 
+      const statusIdx = headerRow.findIndex(h => /status|situa[cç][aã]o|folga|presen[cç]a/i.test(String(h)));
+      const sobrouBatIdx = headerRow.findIndex(h => /bateria|soc|carga|sobrou/i.test(String(h)));
+      const valorKwhIdx = headerRow.findIndex(h => /valor.*kwh|pre[cç]o.*kwh|tarifa/i.test(String(h)));
+      const capBateriaIdx = headerRow.findIndex(h => /capacidade.*bateria|capacidade.*kwh/i.test(String(h)));
+      const custoEnergiaIdx = headerRow.findIndex(h => /custo.*energia|custo.*combust|gasto.*energia/i.test(String(h)));
+      const diariaCarroIdx = headerRow.findIndex(h => /di[aá]ria.*carro|diaria.*carro|loca[cç][aã]o.*di[aá]ria/i.test(String(h)));
+
       const parseMonthYear = (str: string) => {
         const months = ['janeiro', 'fevereiro', 'março', 'marco', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
         const monthsAbbrev = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
@@ -276,8 +591,56 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
           continue;
         }
 
-        // Check for Fixed Expenses Header first, even if it's the headerIdx row
+        // Check for Vehicle Profile block in backup CSV/Excel
         const rowStr = row.join(' ').toLowerCase();
+        const isVehicleHeader = rowStr.includes('perfil e configuração do veículo') || 
+                                rowStr.includes('perfil e configuracao do veiculo') || 
+                                rowStr.includes('dados do veículo') || 
+                                rowStr.includes('dados do veiculo');
+        if (isVehicleHeader) {
+          if (!detectedCarProfile) {
+            detectedCarProfile = {
+              vehicleType: 'eletrico',
+              modelName: '',
+              licensePlate: '',
+              manufactureYear: '',
+              color: '',
+              ownershipType: 'alugado',
+              currentKm: 0,
+              batteryCapacityKwh: 0,
+              estimatedAutonomyKm: 0,
+              kwhCostRate: 0,
+              rentalOrWeeklyRate: 0,
+              monthlyCarExpense: 0,
+              workScheduleType: 'mon_to_sat_sundays_off',
+              customWorkDays: {},
+              insurerName: '',
+              insurancePolicyNumber: '',
+              nextMaintenanceKm: '',
+              notes: ''
+            };
+          }
+          continue;
+        }
+
+        if (detectedCarProfile) {
+          const firstCell = String(row[0] || '').toLowerCase().trim();
+          const secondCell = row[1];
+          if (firstCell.includes('modelo')) detectedCarProfile.modelName = String(secondCell || '').trim();
+          else if (firstCell.includes('placa')) detectedCarProfile.licensePlate = String(secondCell || '').trim();
+          else if (firstCell.includes('tipo de veículo') || firstCell.includes('tipo de veiculo')) {
+            detectedCarProfile.vehicleType = String(secondCell || '').toLowerCase().includes('combust') ? 'combustao' : 'eletrico';
+          }
+          else if (firstCell.includes('odômetro') || firstCell.includes('odometro')) detectedCarProfile.currentKm = Math.round(parseCurrency(secondCell));
+          else if (firstCell.includes('capacidade')) detectedCarProfile.batteryCapacityKwh = parseCurrency(secondCell);
+          else if (firstCell.includes('autonomia')) detectedCarProfile.estimatedAutonomyKm = Math.round(parseCurrency(secondCell));
+          else if (firstCell.includes('tarifa')) detectedCarProfile.kwhCostRate = parseCurrency(secondCell);
+          else if (firstCell.includes('aluguel')) detectedCarProfile.rentalOrWeeklyRate = parseCurrency(secondCell);
+          else if (firstCell.includes('despesa mensal')) detectedCarProfile.monthlyCarExpense = parseCurrency(secondCell);
+          else if (firstCell.includes('escala')) detectedCarProfile.workScheduleType = String(secondCell || '').trim();
+        }
+
+        // Check for Fixed Expenses Header first, even if it's the headerIdx row
         const isTotalRow = rowStr.includes('total mês') || rowStr.includes('total mes') || rowStr.includes('valor total') || rowStr.includes('total geral');
         
         // Helper to check for food keywords
@@ -378,6 +741,36 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
           }
 
           const log = dailyLogsMap[dateStr];
+
+          // Reconhecimento de status folga
+          if (statusIdx !== -1 && row[statusIdx] !== null && row[statusIdx] !== undefined) {
+            const sStr = String(row[statusIdx]).toLowerCase();
+            if (sStr.includes('folga') && !sStr.includes('trabalhad')) {
+              log.isDayOff = true;
+            }
+          }
+
+          // Reconhecimento de bateria, energia, tarifa e diária
+          if (sobrouBatIdx !== -1 && row[sobrouBatIdx] !== null) {
+            const bVal = parseCurrency(row[sobrouBatIdx]);
+            if (bVal > 0) log.sobrouBateria = bVal;
+          }
+          if (valorKwhIdx !== -1 && row[valorKwhIdx] !== null) {
+            const kVal = parseCurrency(row[valorKwhIdx]);
+            if (kVal > 0) log.valorKwh = kVal;
+          }
+          if (capBateriaIdx !== -1 && row[capBateriaIdx] !== null) {
+            const cVal = parseCurrency(row[capBateriaIdx]);
+            if (cVal > 0) log.capacidadeBateria = cVal;
+          }
+          if (custoEnergiaIdx !== -1 && row[custoEnergiaIdx] !== null) {
+            const eVal = parseCurrency(row[custoEnergiaIdx]);
+            if (eVal > 0) log.custoEnergia = eVal;
+          }
+          if (diariaCarroIdx !== -1 && row[diariaCarroIdx] !== null) {
+            const dVal = parseCurrency(row[diariaCarroIdx]);
+            if (dVal > 0) log.diariaCarro = dVal;
+          }
 
           let rowHasSpecificEarnings = false;
           if (uberIdx !== -1 && row[uberIdx] !== null) {
@@ -517,11 +910,31 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
             const val = row[labelIdx + 1];
             if (val && !isNaN(parseCurrency(val)) && parseCurrency(val) > 0 && !isLabelTotal && !isFood && !isNumberOnly) {
               sheetFixedCount++;
+
+              let expenseMonthKey: string | undefined = undefined;
+              const monthCell = row[labelIdx + 2];
+              if (monthCell) {
+                const mStr = String(monthCell).trim();
+                const slashMatch = mStr.match(/^(\d{1,2})\/(\d{4})$/);
+                if (slashMatch) {
+                  expenseMonthKey = `${slashMatch[2]}-${slashMatch[1].padStart(2, '0')}`;
+                } else if (/^\d{4}-\d{2}$/.test(mStr)) {
+                  expenseMonthKey = mStr;
+                }
+              }
+
+              const installmentsCell = row[labelIdx + 3];
+              const installments = installmentsCell && String(installmentsCell).trim() !== '-' 
+                ? String(installmentsCell).trim() 
+                : undefined;
+
               allFixedExpenses.push({
                 id: `imp-f-${Math.random()}`,
                 name: String(label).trim(),
-                value: parseCurrency(val)
-              });
+                value: parseCurrency(val),
+                monthKey: expenseMonthKey,
+                installments
+              } as any);
             } else if (isLabelTotal) {
               inFixedExpensesBlock = false;
             }
@@ -534,6 +947,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
     return { 
       dailyLogs: Object.values(dailyLogsMap), 
       fixedExpenses: allFixedExpenses,
+      carProfile: detectedCarProfile,
       mappingInfo 
     };
   };
@@ -611,8 +1025,20 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
   };
 
   const handleApply = () => {
-    const { dailyLogs, fixedExpenses } = parseAllSheets(results);
-    onImportData(dailyLogs, fixedExpenses);
+    setPastedText('');
+    if (directBackupData) {
+      onImportData(directBackupData.dailyLogs, directBackupData.fixedExpenses, directBackupData.carProfile);
+      setDirectBackupData(null);
+      setResults([]);
+      setImportSummary(null);
+      setMappingInfo({});
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      onClose();
+      return;
+    }
+
+    const { dailyLogs, fixedExpenses, carProfile } = parseAllSheets(results);
+    onImportData(dailyLogs, fixedExpenses, carProfile);
     setResults([]);
     setImportSummary(null);
     setMappingInfo({});
@@ -631,8 +1057,8 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
               <GkdMobilityLogo size="xs" />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-zinc-100">Importação de Dados Excel</h2>
-              <p className="text-[10px] text-zinc-400">Reconhecimento inteligente de planilhas e abas</p>
+              <h2 className="text-sm font-bold text-zinc-100">Importar dados</h2>
+              <p className="text-[10px] text-zinc-400">Detecção automática de planilhas, arquivos Excel/CSV, backups JSON ou textos</p>
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -650,97 +1076,72 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
         <div className="p-6 overflow-y-auto space-y-6">
           {!results.length && !isProcessing ? (
             <div className="space-y-6">
-              {/* Tabs */}
-              <div className="flex p-1 bg-zinc-900 rounded-xl border border-zinc-800">
-                <button
-                  onClick={() => setActiveTab('file')}
-                  className={`flex-1 flex items-center justify-center gap-2 py-2 text-xs font-bold rounded-lg transition-all ${
-                    activeTab === 'file' 
-                    ? 'bg-zinc-800 text-emerald-400 shadow-sm' 
-                    : 'text-zinc-500 hover:text-zinc-300'
-                  }`}
-                >
-                  <FileSpreadsheet className="w-4 h-4" />
-                  Arquivo Excel
-                </button>
-                <button
-                  onClick={() => setActiveTab('paste')}
-                  className={`flex-1 flex items-center justify-center gap-2 py-2 text-xs font-bold rounded-lg transition-all ${
-                    activeTab === 'paste' 
-                    ? 'bg-zinc-800 text-emerald-400 shadow-sm' 
-                    : 'text-zinc-500 hover:text-zinc-300'
-                  }`}
-                >
-                  <Table className="w-4 h-4" />
-                  Copiar e Colar
-                </button>
-              </div>
-
-              {activeTab === 'file' ? (
-                <div 
-                  onClick={() => fileInputRef.current?.click()}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const files = e.dataTransfer.files;
+              <div 
+                onClick={() => fileInputRef.current?.click()}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const files = e.dataTransfer.files;
+                  if (files && files.length > 0) parseExcels(files);
+                }}
+                className="border-2 border-dashed border-zinc-800 hover:border-emerald-500/50 rounded-2xl p-8 text-center transition-all cursor-pointer bg-zinc-900/20 group"
+              >
+                <div className="bg-emerald-500/5 w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3 border border-emerald-500/10 group-hover:scale-110 transition-transform">
+                  <Upload className="w-7 h-7 text-emerald-500/80" />
+                </div>
+                <h3 className="text-sm font-bold text-zinc-200 mb-1">Arraste seu arquivo ou clique para selecionar</h3>
+                <p className="text-xs text-zinc-500 max-w-sm mx-auto">
+                  Detecção automática de planilhas Excel (.xlsx, .xls), CSV e backups (.json).
+                </p>
+                <input 
+                  ref={fileInputRef}
+                  type="file" 
+                  multiple
+                  accept=".xlsx, .xls, .csv, .json" 
+                  className="hidden" 
+                  onChange={(e) => {
+                    const files = e.target.files;
                     if (files && files.length > 0) parseExcels(files);
                   }}
-                  className="border-2 border-dashed border-zinc-800 hover:border-emerald-500/50 rounded-2xl p-10 text-center transition-all cursor-pointer bg-zinc-900/20 group"
-                >
-                  <div className="bg-emerald-500/5 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border border-emerald-500/10 group-hover:scale-110 transition-transform">
-                    <Upload className="w-8 h-8 text-emerald-500/80" />
-                  </div>
-                  <h3 className="text-sm font-bold text-zinc-200 mb-2">Selecione sua planilha de controle</h3>
-                  <p className="text-xs text-zinc-500 max-w-xs mx-auto">
-                    O sistema irá escanear todas as abas buscando datas, faturamento e quilometragem automaticamente.
-                  </p>
-                  <input 
-                    ref={fileInputRef}
-                    type="file" 
-                    multiple
-                    accept=".xlsx, .xls, .csv" 
-                    className="hidden" 
-                    onChange={(e) => {
-                      const files = e.target.files;
-                      if (files && files.length > 0) parseExcels(files);
-                    }}
-                  />
+                />
+              </div>
+
+              {/* Collapsible or direct paste option for text */}
+              <div className="space-y-3 pt-2 border-t border-zinc-800/80">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-zinc-400">Ou cole os dados do Excel / Planilha aqui:</span>
+                  <span className="text-[10px] text-zinc-500">Detecção Automática</span>
                 </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="relative">
-                    <textarea
-                      value={pastedText}
-                      onChange={(e) => setPastedText(e.target.value)}
-                      placeholder="Abra seu Excel ou Google Sheets, selecione os dados, copie (Ctrl+C) e cole aqui (Ctrl+V)..."
-                      className="w-full h-48 bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 text-xs text-zinc-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all placeholder:text-zinc-600 resize-none custom-scrollbar"
-                    />
-                    {pastedText && (
-                      <button 
-                        onClick={() => setPastedText('')}
-                        className="absolute top-3 right-3 p-1.5 rounded-lg bg-zinc-800 text-zinc-400 hover:text-white transition-colors"
-                      >
-                        <X size={14} />
-                      </button>
-                    )}
-                  </div>
+                <div className="relative">
+                  <textarea
+                    value={pastedText}
+                    onChange={(e) => setPastedText(e.target.value)}
+                    placeholder="Cole aqui os dados copiados (Ctrl+V) de sua planilha ou backup..."
+                    className="w-full h-32 bg-zinc-900/50 border border-zinc-800 rounded-xl p-3 text-xs text-zinc-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all placeholder:text-zinc-600 resize-none custom-scrollbar"
+                  />
+                  {pastedText && (
+                    <button 
+                      onClick={() => setPastedText('')}
+                      className="absolute top-2.5 right-2.5 p-1 rounded-lg bg-zinc-800 text-zinc-400 hover:text-white transition-colors"
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+                {pastedText.trim() && (
                   <button
                     onClick={handlePasteData}
-                    disabled={!pastedText.trim()}
-                    className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-30 disabled:cursor-not-allowed text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-900/10"
+                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-900/10"
                   >
-                    <TrendingUp size={20} />
-                    Analisar Dados Colados
+                    <TrendingUp size={16} />
+                    Processar e Analisar Dados Colados
                   </button>
-                  <p className="text-[10px] text-zinc-500 text-center italic">
-                    Dica: Copie a tabela inteira do Excel (incluindo o cabeçalho) para melhores resultados.
-                  </p>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           ) : isProcessing ? (
             <div className="py-12 flex flex-col items-center justify-center space-y-4">
@@ -754,32 +1155,43 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
             <div className="space-y-6">
               {/* Summary */}
               {importSummary && (
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl flex items-center gap-3">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="bg-zinc-900 border border-zinc-800 p-3 rounded-xl flex items-center gap-3">
                     <div className="bg-blue-500/10 p-2 rounded-lg text-blue-400">
                       <Calendar className="w-4 h-4" />
                     </div>
                     <div>
-                      <span className="text-[10px] text-zinc-500 block uppercase font-bold tracking-wider">Datas Encontradas</span>
-                      <span className="text-lg font-black text-zinc-100">{importSummary.datesFound} dias</span>
+                      <span className="text-[10px] text-zinc-500 block uppercase font-bold tracking-wider">Datas</span>
+                      <span className="text-base font-black text-zinc-100">{importSummary.datesFound} dias</span>
                     </div>
                   </div>
-                  <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl flex items-center gap-3">
+                  <div className="bg-zinc-900 border border-zinc-800 p-3 rounded-xl flex items-center gap-3">
                     <div className="bg-emerald-500/10 p-2 rounded-lg text-emerald-400">
                       <TrendingUp className="w-4 h-4" />
                     </div>
                     <div>
-                      <span className="text-[10px] text-zinc-500 block uppercase font-bold tracking-wider">Total Mapeado</span>
-                      <span className="text-lg font-black text-zinc-100">R$ {importSummary.totalEarnings.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                      <span className="text-[10px] text-zinc-500 block uppercase font-bold tracking-wider">Faturamento</span>
+                      <span className="text-base font-black text-zinc-100">R$ {importSummary.totalEarnings.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                     </div>
                   </div>
-                  <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl flex items-center gap-3">
+                  <div className="bg-zinc-900 border border-zinc-800 p-3 rounded-xl flex items-center gap-3">
                     <div className="bg-purple-500/10 p-2 rounded-lg text-purple-400">
                       <Receipt className="w-4 h-4" />
                     </div>
                     <div>
-                      <span className="text-[10px] text-zinc-500 block uppercase font-bold tracking-wider">Despesas Fixas</span>
-                      <span className="text-lg font-black text-zinc-100">{importSummary.fixedExpensesFound} itens</span>
+                      <span className="text-[10px] text-zinc-500 block uppercase font-bold tracking-wider">Fixas</span>
+                      <span className="text-base font-black text-zinc-100">{importSummary.fixedExpensesFound} itens</span>
+                    </div>
+                  </div>
+                  <div className="bg-zinc-900 border border-zinc-800 p-3 rounded-xl flex items-center gap-3">
+                    <div className="bg-amber-500/10 p-2 rounded-lg text-amber-400">
+                      <Car className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-zinc-500 block uppercase font-bold tracking-wider">Veículo</span>
+                      <span className="text-xs font-black text-zinc-100 truncate block max-w-[100px]">
+                        {importSummary.carModelFound || 'Detectado'}
+                      </span>
                     </div>
                   </div>
                 </div>

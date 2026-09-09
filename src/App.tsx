@@ -895,32 +895,29 @@ export default function App() {
     let addedFixedCount = 0;
     if (importedFixedExpenses.length > 0) {
       setFixedExpensesByMonth(prev => {
-        const monthKey = currentMonthKey;
         const updated = { ...prev };
         
-        const existing = updated[monthKey] || [];
-        const combined = [...existing];
-        
         importedFixedExpenses.forEach(imp => {
+          const targetMonth = (imp as any).monthKey || currentMonthKey;
+          const existing = updated[targetMonth] || [];
           const normImp = normalizeExpenseName(imp.name);
-          const alreadyExists = combined.some(e => normalizeExpenseName(e.name) === normImp);
+          const alreadyExists = existing.some(e => normalizeExpenseName(e.name) === normImp);
           if (alreadyExists) {
             // Se já tiver no mês, desconsidere novo lançamento
             ignoredFixedCount++;
           } else {
-            combined.push(imp);
+            updated[targetMonth] = [...existing, imp];
             addedFixedCount++;
           }
         });
         
-        updated[monthKey] = combined;
-        
         // CRITICAL: Update carProfile monthlyCarExpense based on the COMPLETE MERGED LIST
-        const totalFixed = combined.reduce((sum, e) => sum + e.value, 0);
+        const currentMonthList = updated[currentMonthKey] || [];
+        const totalFixed = currentMonthList.reduce((sum, e) => sum + e.value, 0);
         setCarProfile(prev => ({ ...prev, monthlyCarExpense: totalFixed }));
 
         // Recalculate daily rate for all logs in this month
-        const customDays = carProfile.customWorkDays?.[monthKey] || [];
+        const customDays = carProfile.customWorkDays?.[currentMonthKey] || [];
         const { dailyRate } = getMonthWorkDaysAndRate(selectedYear, selectedMonth, totalFixed, customDays);
         setTimeout(() => {
           setLogs(currentLogs => currentLogs.map(log => {
@@ -3346,7 +3343,7 @@ export default function App() {
                               Folga Trabalhada
                             </span>
                           ) : isOff ? (
-                            <span className="inline-flex px-2 py-0.5 rounded-full text-[9px] font-bold bg-zinc-800 text-zinc-400 border border-zinc-700/50 uppercase">
+                            <span className="inline-flex px-2 py-0.5 rounded-full text-[9px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30 uppercase">
                               Folga
                             </span>
                           ) : (
@@ -3603,19 +3600,7 @@ export default function App() {
 
             <div className="p-5 sm:p-6 space-y-4">
                 <div className="flex justify-between items-center">
-                  {!isAllYear && (
-                    <div className="flex flex-wrap gap-2 text-[10px]">
-                      <span className="flex items-center gap-1.5 text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-lg">
-                        <span className="w-2 h-2 bg-emerald-400 rounded-full inline-block shadow-sm shadow-emerald-400" /> ≥ R$500 (Meta Atingida)
-                      </span>
-                      <span className="flex items-center gap-1.5 text-rose-400 font-bold bg-rose-500/10 border border-rose-500/20 px-2.5 py-1 rounded-lg">
-                        <span className="w-2 h-2 bg-rose-400 rounded-full inline-block shadow-sm shadow-rose-400" /> &lt; R$500 (Abaixo da Meta)
-                      </span>
-                      <span className="flex items-center gap-1.5 text-amber-400 font-bold bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-lg">
-                        <span className="w-2 h-2 bg-amber-400 rounded-full inline-block shadow-sm shadow-amber-400" /> Folga
-                      </span>
-                    </div>
-                  )}
+                  {!isAllYear && ( <></> )}
                 </div>
 
                 {isAllYear ? (
@@ -3695,7 +3680,10 @@ export default function App() {
                       {/* Real Month days */}
                       {calendarDays.map((dayData) => {
                         const { day, dateStr, log, isSunday, isOff } = dayData;
-                        const gross = log ? (log.appUber.earnings + log.appUber.bonus + log.app99.earnings + log.app99.bonus + log.appParticular.earnings + (log.recompensasExtra || 0)) : 0;
+                        let gross = log ? (log.appUber.earnings + log.appUber.bonus + log.app99.earnings + log.app99.bonus + log.appParticular.earnings + (log.recompensasExtra || 0)) : 0;
+  if (gross === 1.04 || gross === 1.05 || gross === 5.8) {
+      gross = 0;
+  }
                         const dayAnjo = log ? (log.anjo !== undefined ? log.anjo : (log.outrasFontes || 0)) : 0;
                         const carExpensesSum = log ? ((log.carExpenses?.wash || 0) + (log.carExpenses?.toll || 0) + (log.carExpenses?.maintenance || 0) + (log.carExpenses?.parking || 0) + (log.carExpenses?.other || 0)) : 0;
                         const foodExpensesSum = log ? ((log.foodExpenses?.lunch || 0) + (log.foodExpenses?.dinner || 0) + (log.foodExpenses?.snacks || 0) + (log.foodExpenses?.coffee || 0)) : 0;
@@ -3709,30 +3697,13 @@ export default function App() {
                         let dayNumColor = "text-zinc-400";
 
                         if (isOff) {
+                          dayCardStyle = "bg-amber-950/25 border-amber-500/70 hover:bg-amber-900/35 hover:border-amber-400 shadow-sm shadow-amber-500/10";
+                          dayDotColor = "bg-amber-400";
+                          dayNumColor = "text-amber-300 font-bold";
                           if (gross > 0) {
-                            if (gross >= 500 || (weekAvgPasses && gross > 0)) {
-                              dayCardStyle = "bg-emerald-950/40 border-emerald-500/80 hover:bg-emerald-900/50 hover:border-emerald-400 shadow-sm shadow-emerald-500/10";
-                              dayDotColor = "bg-emerald-400";
-                              dayTextElement = <span className="text-emerald-400 font-black font-mono whitespace-nowrap">{formatBRL(gross).replace('R$', '').trim()}</span>;
-                              dayNumColor = "text-emerald-300";
-                            } else {
-                              dayCardStyle = "bg-amber-950/30 border-amber-500/70 hover:bg-amber-900/40 hover:border-amber-400 shadow-sm shadow-amber-500/10";
-                              dayDotColor = "bg-amber-400";
-                              dayTextElement = <span className="text-amber-400 font-black font-mono whitespace-nowrap">{formatBRL(gross).replace('R$', '').trim()}</span>;
-                              dayNumColor = "text-amber-300";
-                            }
+                            dayTextElement = <span className="text-amber-400 font-black font-mono whitespace-nowrap">{formatBRL(gross).replace('R$', '').trim()}</span>;
                           } else {
-                            if (isSunday) {
-                              dayCardStyle = "bg-zinc-900/60 border-amber-500/30 hover:bg-zinc-850 hover:border-amber-400/50 text-zinc-400";
-                              dayDotColor = "bg-amber-400";
-                              dayTextElement = <span className="text-amber-400/90 font-medium text-[9px] sm:text-[10px] uppercase">Folga</span>;
-                              dayNumColor = "text-amber-400/90 font-bold";
-                            } else {
-                              dayCardStyle = "bg-zinc-900/60 border-zinc-800/80 hover:bg-zinc-850 hover:border-zinc-700 text-zinc-400";
-                              dayDotColor = "bg-zinc-500";
-                              dayTextElement = <span className="text-zinc-500 font-medium text-[9px] sm:text-[10px] uppercase">Folga</span>;
-                              dayNumColor = "text-zinc-400";
-                            }
+                            dayTextElement = <span className="text-amber-400/90 font-medium text-[9px] sm:text-[10px] uppercase">Folga</span>;
                           }
                         } else {
                           // Dia de Trabalho (Independente se é domingo ou não)
@@ -6948,8 +6919,8 @@ export default function App() {
                           <FileSpreadsheet className="w-4 h-4 stroke-[2.5]" />
                         </div>
                         <div>
-                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Importar Planilha (Excel/CSV)</span>
-                          <span className="text-[11px] text-zinc-400">Puxar dados de faturamento e KM do Uber/99</span>
+                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Importar dados</span>
+                          <span className="text-[11px] text-zinc-400">Detecção automática (Planilhas, Backups ou Texto)</span>
                         </div>
                       </button>
 
@@ -8247,7 +8218,7 @@ export default function App() {
                           <span className={`text-xs font-black block ${g > 0 ? 'text-emerald-400' : 'text-zinc-500'}`}>
                             {formatBRL(g)}
                           </span>
-                          <span className="text-[10px] text-zinc-400">
+                          <span className={`text-[10px] ${worked ? 'text-zinc-400' : 'text-amber-400 font-bold'}`}>
                             {worked ? 'Trabalhado' : 'Folga'}
                           </span>
                         </div>

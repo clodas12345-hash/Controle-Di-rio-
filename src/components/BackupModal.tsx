@@ -13,9 +13,13 @@ import {
   Share2, 
   FileCode,
   AlertCircle,
-  MessageCircle
+  MessageCircle,
+  Receipt,
+  Upload,
+  ArrowRight
 } from 'lucide-react';
 import { GkdMobilityLogo } from './GkdMobilityLogo';
+import { getApiUrl, isMobileOrNativeApp } from '../lib/api';
 
 export type BackupScope = 'all' | 'day' | 'week' | 'month' | 'custom';
 export type BackupFormat = 'excel' | 'json';
@@ -24,6 +28,7 @@ export interface BackupModalProps {
   isOpen: boolean;
   onClose: () => void;
   onBack?: () => void;
+  onOpenImport?: () => void;
   logs: any[];
   carProfile: any;
   fixedExpensesByMonth: Record<string, any[]>;
@@ -35,6 +40,7 @@ export function BackupModal({
   isOpen,
   onClose,
   onBack,
+  onOpenImport,
   logs,
   carProfile,
   fixedExpensesByMonth
@@ -107,15 +113,135 @@ export function BackupModal({
     }
   }, [logs, scope, selectedDay, selectedMonth, customStart, customEnd]);
 
+  // Recuperação resiliente das despesas fixas (props ou localStorage)
+  const effectiveFixedExpensesByMonth = useMemo(() => {
+    let source = fixedExpensesByMonth;
+    if (!source || Object.keys(source).length === 0) {
+      const keysToCheck = [
+        'driver_fixed_expenses_v6_by_month',
+        'driver_fixed_expenses_v5_by_month',
+        'driver_fixed_expenses_v4_by_month',
+        'driver_fixed_expenses_by_month'
+      ];
+      for (const k of keysToCheck) {
+        try {
+          const saved = localStorage.getItem(k);
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (typeof parsed === 'object' && parsed !== null && Object.keys(parsed).length > 0) {
+              source = parsed;
+              break;
+            }
+          }
+        } catch (_) {}
+      }
+    }
+    return source || {};
+  }, [fixedExpensesByMonth]);
+
+  // Mapeia as despesas fixas relevantes para o escopo selecionado
+  const relevantFixedExpenses = useMemo(() => {
+    const entries = Object.entries(effectiveFixedExpensesByMonth);
+    if (entries.length === 0) return [];
+
+    let targetMonths: string[] = [];
+
+    if (scope === 'all') {
+      targetMonths = Object.keys(effectiveFixedExpensesByMonth).sort();
+    } else if (scope === 'month') {
+      const [y, m] = selectedMonth.split('-');
+      const padded = `${y}-${m.padStart(2, '0')}`;
+      const unpadded = `${y}-${parseInt(m, 10)}`;
+      targetMonths = [padded, unpadded];
+    } else if (scope === 'day') {
+      const [y, m] = selectedDay.split('-');
+      const padded = `${y}-${m.padStart(2, '0')}`;
+      const unpadded = `${y}-${parseInt(m, 10)}`;
+      targetMonths = [padded, unpadded];
+    } else if (scope === 'week') {
+      const { start, end } = getWeekRange(selectedDay);
+      const startMonth = start.slice(0, 7);
+      const endMonth = end.slice(0, 7);
+      targetMonths = Array.from(new Set([startMonth, endMonth]));
+    } else if (scope === 'custom') {
+      const startMonth = customStart.slice(0, 7);
+      const endMonth = customEnd.slice(0, 7);
+      targetMonths = Array.from(new Set([startMonth, endMonth]));
+    }
+
+    const result: Array<{ id: string; name: string; value: number; monthKey: string; installments?: string }> = [];
+
+    if (scope === 'all') {
+      entries.forEach(([mKey, list]) => {
+        const arr = Array.isArray(list) ? (list as any[]) : [];
+        arr.forEach(exp => {
+          if (exp && exp.name && !isNaN(Number(exp.value))) {
+            result.push({
+              id: exp.id || `exp-${Math.random()}`,
+              name: String(exp.name).trim(),
+              value: Number(exp.value),
+              monthKey: mKey,
+              installments: exp.installments
+            });
+          }
+        });
+      });
+    } else {
+      // Coleta do mês alvo
+      targetMonths.forEach(mKey => {
+        const list = effectiveFixedExpensesByMonth[mKey];
+        if (Array.isArray(list) && list.length > 0) {
+          list.forEach((exp: any) => {
+            if (exp && exp.name && !isNaN(Number(exp.value))) {
+              result.push({
+                id: exp.id || `exp-${Math.random()}`,
+                name: String(exp.name).trim(),
+                value: Number(exp.value),
+                monthKey: mKey,
+                installments: exp.installments
+              });
+            }
+          });
+        }
+      });
+
+      // Se o período específico não tiver despesas fixas próprias mas existirem outras salvas,
+      // inclui todas para que o arquivo de backup NUNCA fique sem as despesas fixas cadastradas
+      if (result.length === 0) {
+        entries.forEach(([mKey, list]) => {
+          const arr = Array.isArray(list) ? (list as any[]) : [];
+          arr.forEach(exp => {
+            if (exp && exp.name && !isNaN(Number(exp.value))) {
+              result.push({
+                id: exp.id || `exp-${Math.random()}`,
+                name: String(exp.name).trim(),
+                value: Number(exp.value),
+                monthKey: mKey,
+                installments: exp.installments
+              });
+            }
+          });
+        });
+      }
+    }
+
+    return result;
+  }, [effectiveFixedExpensesByMonth, scope, selectedMonth, selectedDay, customStart, customEnd]);
+
+  const totalFixedVal = useMemo(() => {
+    return relevantFixedExpenses.reduce((sum, e) => sum + (Number(e.value) || 0), 0);
+  }, [relevantFixedExpenses]);
+
   if (!isOpen) return null;
 
   const generateJsonData = () => {
     const backupPayload = {
       app: "Controle Diário",
-      versaoBackup: "3.0",
+      versaoBackup: "3.1",
       dataExportacao: new Date().toISOString(),
       escopoExportacao: {
         tipo: scope,
+        rotulo: getRangeLabel(),
         diaSelecionado: scope === 'day' ? selectedDay : undefined,
         mesSelecionado: scope === 'month' ? selectedMonth : undefined,
         semanaSelecionada: scope === 'week' ? getWeekRange(selectedDay) : undefined,
@@ -133,7 +259,7 @@ export function BackupModal({
         autonomiaEstimadaKm: carProfile?.estimatedAutonomyKm || 0,
         valorPagoPelaEnergiaOuCombustivel: carProfile?.kwhCostRate || 0,
         valorAluguelSemanal: carProfile?.rentalOrWeeklyRate || 0,
-        despesaMensalCarroEstimada: carProfile?.monthlyCarExpense || 0,
+        despesaMensalCarroEstimada: carProfile?.monthlyCarExpense || totalFixedVal || 0,
         escalaTrabalho: carProfile?.workScheduleType || "mon_to_sat_sundays_off",
         diasTrabalhoPersonalizados: carProfile?.customWorkDays || {},
         seguradora: carProfile?.insurerName || "",
@@ -141,7 +267,16 @@ export function BackupModal({
         proximaManutencaoKm: carProfile?.nextMaintenanceKm || "",
         observacoesNotas: carProfile?.notes || ""
       },
-      despesasFixasPorMes: fixedExpensesByMonth || {},
+      despesasFixasPorMes: effectiveFixedExpensesByMonth,
+      despesasFixasLista: relevantFixedExpenses.map(exp => ({
+        id: exp.id,
+        nome: exp.name,
+        valor: exp.value,
+        mes: exp.monthKey,
+        parcelas: exp.installments || undefined
+      })),
+      totalDespesasFixas: totalFixedVal,
+      totalItensDespesasFixas: relevantFixedExpenses.length,
       lancamentosDiarios: filteredLogs.map(log => ({
         id: log.id,
         data: log.date,
@@ -198,18 +333,40 @@ export function BackupModal({
   const generateCsvData = () => {
     const isEletrico = carProfile?.vehicleType === 'eletrico';
     const carProfileData = [
-      ["CONTROLE DIÁRIO - BACKUP COMPLETO DO SISTEMA", "", "", ""],
-      ["Data de Geração", new Date().toLocaleDateString('pt-BR') + ' ' + new Date().toLocaleTimeString('pt-BR'), "", ""],
-      ["Período Selecionado", getRangeLabel(), "", ""],
-      ["", "", "", ""],
-      ["DADOS DO VEÍCULO E ENERGIA", "", "", ""],
-      ["Modelo do Veículo", carProfile?.modelName || "-"],
-      ["Placa", carProfile?.licensePlate || "-"],
-      ["Tipo de Propulsão", isEletrico ? '100% Elétrico (EV)' : 'Combustão / Híbrido'],
-      ["KM Atual (ODO)", carProfile?.currentKm || 0],
-      ["Valor da Energia / Combustível", `R$ ${(carProfile?.kwhCostRate || 0).toFixed(2)} por ${isEletrico ? 'kWh' : 'Litro'}`],
-      ["", "", "", ""]
+      ["CONTROLE DIÁRIO - BACKUP COMPLETO DO SISTEMA", "", "", "", ""],
+      ["Data de Geração", new Date().toLocaleDateString('pt-BR') + ' ' + new Date().toLocaleTimeString('pt-BR'), "", "", ""],
+      ["Período Selecionado", getRangeLabel(), "", "", ""],
+      ["", "", "", "", ""],
+      ["DADOS DO VEÍCULO E ENERGIA", "", "", "", ""],
+      ["Modelo do Veículo", carProfile?.modelName || "-", "", "", ""],
+      ["Placa", carProfile?.licensePlate || "-", "", "", ""],
+      ["Tipo de Propulsão", isEletrico ? '100% Elétrico (EV)' : 'Combustão / Híbrido', "", "", ""],
+      ["KM Atual (ODO)", carProfile?.currentKm || 0, "", "", ""],
+      ["Valor da Energia / Combustível", `R$ ${(carProfile?.kwhCostRate || 0).toFixed(2)} por ${isEletrico ? 'kWh' : 'Litro'}`, "", "", ""],
+      ["Aluguel Semanal / Parcela", `R$ ${(carProfile?.rentalOrWeeklyRate || 0).toFixed(2)}`, "", "", ""],
+      ["Total Despesas Fixas Estimadas", `R$ ${(carProfile?.monthlyCarExpense || totalFixedVal || 0).toFixed(2)}`, "", "", ""],
+      ["", "", "", "", ""]
     ];
+
+    // Bloco de Despesas Fixas (totalmente estruturado para leitura humana e ExcelImportModal)
+    const fixedExpensesRows: (string | number)[][] = [];
+    if (relevantFixedExpenses.length > 0) {
+      fixedExpensesRows.push(["DESPESAS FIXAS DO MÊS / CONTAS FIXAS", "", "", "", ""]);
+      fixedExpensesRows.push(["Despesa Fixa", "Valor (R$)", "Mês / Competência", "Parcelas", "Categoria"]);
+      relevantFixedExpenses.forEach(exp => {
+        const [ano, mes] = (exp.monthKey || '').split('-');
+        const mesFmt = mes && ano ? `${mes}/${ano}` : (exp.monthKey || '-');
+        fixedExpensesRows.push([
+          exp.name,
+          Number(exp.value).toFixed(2),
+          mesFmt,
+          exp.installments || "-",
+          "Despesa Fixa"
+        ]);
+      });
+      fixedExpensesRows.push(["Total Despesas Fixas", totalFixedVal.toFixed(2), "", "", ""]);
+      fixedExpensesRows.push(["", "", "", "", ""]);
+    }
 
     const headers = [
       "Data", "Dia da Semana", "Status", "KM Rodados", "Bateria Restante (%)",
@@ -268,11 +425,15 @@ export function BackupModal({
       ];
     });
 
-    return "\uFEFF" + [
+    const allSections = [
       ...carProfileData.map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(";")),
+      ...fixedExpensesRows.map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(";")),
+      ["LANÇAMENTOS DIÁRIOS E FATURAMENTO", "", "", "", ""].map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(";"),
       headers.join(";"),
       ...rows.map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(";"))
-    ].join("\n");
+    ];
+
+    return "\uFEFF" + allSections.join("\n");
   };
 
   const getPreparedContent = () => {
@@ -294,21 +455,92 @@ export function BackupModal({
     else if (scope === 'custom') sufixoPeriodo = `Periodo_${customStart}_a_${customEnd}`;
     return `Controle_Diario_Backup_${sufixoPeriodo}_${dataHoje}.${extension}`;
   };
+  const hasData = filteredLogs.length > 0 || relevantFixedExpenses.length > 0;
+
   // Download compatível com APK Android e navegadores
-  const handleDownload = () => {
-    if (filteredLogs.length === 0) {
-      alert("Nenhum lançamento encontrado para o período selecionado.");
+  const handleDownload = async () => {
+    if (!hasData) {
+      alert("Nenhum lançamento ou despesa fixa encontrado para o período selecionado.");
       return;
     }
     const { content, type, extension } = getPreparedContent();
     const fileName = getExportFileName(extension);
+    const isMobile = isMobileOrNativeApp();
 
-    // 1. Envia via formulário POST HTTP (O Android intercepta e salva nativamente em Downloads)
+    // 1. Se estiver no celular/APK e o navegador suportar Web Share API com arquivos,
+    // usa o compartilhamento nativo do Android que permite salvar direto em "Arquivos", "Drive", "Downloads" ou "WhatsApp"
+    if (isMobile && typeof navigator !== 'undefined' && (navigator as any).canShare) {
+      try {
+        const file = new File([content], fileName, { type: type || 'text/csv' });
+        if ((navigator as any).canShare({ files: [file] })) {
+          await (navigator as any).share({
+            files: [file],
+            title: fileName,
+            text: 'Backup do GKD Controle Diário'
+          });
+          setDownloadSuccess(true);
+          setTimeout(() => setDownloadSuccess(false), 4000);
+          return;
+        }
+      } catch (shareErr: any) {
+        if (shareErr && shareErr.name === 'AbortError') {
+          return; // Usuário apenas fechou a janela de compartilhamento nativa
+        }
+      }
+    }
+
+    // 2. Download via Data URI Base64 (Funciona na maioria das WebViews Android sem precisar de requisições de rede)
     try {
+      const base64 = btoa(unescape(encodeURIComponent(content)));
+      const dataUri = `data:${type || 'text/csv'};base64,${base64}`;
+      const link = document.createElement('a');
+      link.href = dataUri;
+      link.download = fileName;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        try { document.body.removeChild(link); } catch (_) {}
+      }, 500);
+      setDownloadSuccess(true);
+      setTimeout(() => setDownloadSuccess(false), 3000);
+      return;
+    } catch (_) {}
+
+    // 3. Fallback: Blob URL padrão
+    try {
+      const blob = new Blob([content], { type });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        try {
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+        } catch (_) {}
+      }, 1000);
+      setDownloadSuccess(true);
+      setTimeout(() => setDownloadSuccess(false), 3000);
+      return;
+    } catch (_) {}
+
+    // 4. Fallback: Formulário POST via iframe invisível com URL absoluta para alcançar o servidor Cloud Run
+    try {
+      const exportUrl = getApiUrl('/api/export-backup');
+      const iframeName = 'hidden_backup_iframe_' + Date.now();
+      const iframe = document.createElement('iframe');
+      iframe.name = iframeName;
+      iframe.style.display = 'none';
+      document.body.appendChild(iframe);
+
       const form = document.createElement('form');
       form.method = 'POST';
-      form.action = '/api/export-backup';
-      form.target = '_blank';
+      form.action = exportUrl;
+      form.target = iframeName;
       form.style.display = 'none';
 
       const inputContent = document.createElement('input');
@@ -331,29 +563,17 @@ export function BackupModal({
 
       document.body.appendChild(form);
       form.submit();
-      
+
       setTimeout(() => {
-        try { document.body.removeChild(form); } catch (_) {}
-      }, 1000);
+        try {
+          document.body.removeChild(form);
+          document.body.removeChild(iframe);
+        } catch (_) {}
+      }, 3000);
 
       setDownloadSuccess(true);
       setTimeout(() => setDownloadSuccess(false), 3000);
       return;
-    } catch (_) {}
-
-    // Fallback: Blob URL
-    try {
-      const blob = new Blob([content], { type });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-      setDownloadSuccess(true);
-      setTimeout(() => setDownloadSuccess(false), 3000);
     } catch (_) {
       handleCopyText();
     }
@@ -361,7 +581,7 @@ export function BackupModal({
 
   // Copiar para área de transferência
   const handleCopyText = async () => {
-    if (filteredLogs.length === 0) return;
+    if (!hasData) return;
     const { content } = getPreparedContent();
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -381,8 +601,8 @@ export function BackupModal({
 
   // Enviar resumo direto no WhatsApp
   const handleOpenWhatsApp = () => {
-    if (filteredLogs.length === 0) {
-      alert("Nenhum lançamento no período selecionado.");
+    if (!hasData) {
+      alert("Nenhum lançamento ou despesa fixa no período selecionado.");
       return;
     }
     let totalBruto = 0, totalDesp = 0, totalUber = 0, total99 = 0, totalKm = 0;
@@ -412,7 +632,8 @@ export function BackupModal({
 💰 *Faturamento Bruto:* R$ ${totalBruto.toFixed(2)}
 🖤 *Uber:* R$ ${totalUber.toFixed(2)}
 💛 *99:* R$ ${total99.toFixed(2)}
-📉 *Despesas Totais:* R$ ${totalDesp.toFixed(2)}
+📌 *Despesas Fixas:* R$ ${totalFixedVal.toFixed(2)} (${relevantFixedExpenses.length} contas)
+📉 *Despesas Variáveis:* R$ ${totalDesp.toFixed(2)}
 ✅ *Resultado Líquido:* R$ ${(totalBruto - totalDesp).toFixed(2)}
 📍 *KM Rodados:* ${totalKm.toFixed(1)} km`;
 
@@ -431,7 +652,7 @@ export function BackupModal({
 
   // Compartilhamento nativo
   const handleShare = () => {
-    if (filteredLogs.length === 0) return;
+    if (!hasData) return;
     const { content, type, extension } = getPreparedContent();
     const fileName = getExportFileName(extension);
 
@@ -442,7 +663,7 @@ export function BackupModal({
           navigator.share({
             files: [file],
             title: 'Backup Controle Diário',
-            text: `Backup (${filteredLogs.length} lançamentos).`
+            text: `Backup (${filteredLogs.length} lançamentos e ${relevantFixedExpenses.length} despesas fixas).`
           }).catch((err: any) => {
             if (err && err.name !== 'AbortError') handleDownload();
           });
@@ -507,6 +728,33 @@ export function BackupModal({
 
         {/* Scrollable Content */}
         <div className="p-4 overflow-y-auto space-y-4">
+
+          {/* Atalho para Restaurar / Importar Backup */}
+          {onOpenImport && (
+            <button
+              type="button"
+              onClick={onOpenImport}
+              className="w-full p-2.5 bg-gradient-to-r from-emerald-950/40 via-zinc-900 to-zinc-900 border border-emerald-500/40 hover:border-emerald-400 rounded-xl flex items-center justify-between transition-all cursor-pointer group shadow-sm"
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg group-hover:bg-emerald-500/20 transition-colors">
+                  <Upload className="w-4 h-4" />
+                </div>
+                <div className="text-left">
+                  <span className="text-xs font-bold text-zinc-100 block group-hover:text-emerald-300">
+                    Restaurar / Importar Backup Anterior
+                  </span>
+                  <span className="text-[10px] text-zinc-400">
+                    Clique aqui para carregar seu arquivo .json, .xlsx ou .csv
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-1 text-emerald-400 text-xs font-semibold">
+                <span>Importar</span>
+                <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
+              </div>
+            </button>
+          )}
 
           {/* Formato do Arquivo */}
           <div className="p-3 bg-zinc-900/40 border border-zinc-800/80 rounded-xl space-y-2">
@@ -707,13 +955,57 @@ export function BackupModal({
             </div>
           )}
 
+          {/* Card Visual de Despesas Fixas Inclusas */}
+          <div className="p-3 bg-zinc-900/60 border border-purple-500/30 rounded-xl space-y-2 animate-fade-in">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-purple-500/20 text-purple-400 rounded-lg">
+                  <Receipt className="w-4 h-4" />
+                </div>
+                <div>
+                  <span className="text-xs font-bold text-zinc-200 block">Despesas Fixas Inclusas no Arquivo</span>
+                  <span className="text-[10px] text-zinc-400 block">
+                    {relevantFixedExpenses.length > 0 
+                      ? `${relevantFixedExpenses.length} conta(s) fixa(s) identificada(s)` 
+                      : 'Nenhuma despesa fixa salva'}
+                  </span>
+                </div>
+              </div>
+              <div className="text-right">
+                <span className="text-xs font-extrabold text-purple-300 font-mono block">
+                  R$ {totalFixedVal.toFixed(2)}
+                </span>
+                <span className="text-[9px] text-emerald-400 font-bold flex items-center justify-end gap-1">
+                  <Check className="w-3 h-3 inline" /> Salvo no backup
+                </span>
+              </div>
+            </div>
+
+            {relevantFixedExpenses.length > 0 && (
+              <div className="pt-1 flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                {relevantFixedExpenses.slice(0, 10).map((exp, idx) => (
+                  <span key={exp.id || idx} className="text-[10px] bg-purple-950/60 border border-purple-800/50 text-purple-200 px-2 py-0.5 rounded-lg flex items-center gap-1">
+                    <span>{exp.name}:</span>
+                    <strong className="font-mono text-purple-100">R$ {Number(exp.value).toFixed(2)}</strong>
+                    {exp.installments && <span className="text-[9px] text-zinc-400">({exp.installments})</span>}
+                  </span>
+                ))}
+                {relevantFixedExpenses.length > 10 && (
+                  <span className="text-[10px] text-zinc-400 self-center">
+                    +{relevantFixedExpenses.length - 10} outras...
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Resumo do Backup */}
           <div className="p-3 bg-zinc-900/40 border border-zinc-800/80 rounded-xl flex items-center justify-between">
             <div className="space-y-0.5">
               <span className="text-[11px] font-bold text-zinc-200 block">{getRangeLabel()}</span>
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-[10px] text-zinc-400">
-                  {filteredLogs.length > 0 ? `${filteredLogs.length} dia(s) com dados • Veículo e Despesas Inclusos` : 'Nenhum lançamento no período'}
+                  {filteredLogs.length} dia(s) • {relevantFixedExpenses.length} despesa(s) fixa(s) • Dados do Carro
                 </span>
                 <span className="text-[9px] font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-800/50 px-1.5 py-0.5 rounded font-bold">
                   {getExportFileName(format === 'excel' ? 'csv' : 'json')}
@@ -721,7 +1013,7 @@ export function BackupModal({
               </div>
             </div>
             <div className="px-2.5 py-1 rounded-lg bg-emerald-600 font-mono text-xs text-white font-extrabold shrink-0 ml-2 shadow-sm">
-              {filteredLogs.length} reg.
+              {filteredLogs.length} dias • {relevantFixedExpenses.length} fixas
             </div>
           </div>
 
@@ -733,7 +1025,7 @@ export function BackupModal({
               <button
                 type="button"
                 onClick={handleOpenWhatsApp}
-                disabled={filteredLogs.length === 0}
+                disabled={!hasData}
                 className="p-3 bg-[#25D366] hover:bg-[#20bd5a] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2.5 shadow-lg shadow-emerald-950/40 active:scale-95 cursor-pointer"
               >
                 <MessageCircle className="w-5 h-5 fill-white shrink-0" />
@@ -744,7 +1036,7 @@ export function BackupModal({
               <button
                 type="button"
                 onClick={handleDownload}
-                disabled={filteredLogs.length === 0}
+                disabled={!hasData}
                 className="p-3 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl transition-all flex flex-col items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-lg shadow-emerald-950/40"
               >
                 {downloadSuccess ? <Check className="w-4 h-4 text-emerald-300" /> : <Download className="w-4 h-4 text-emerald-300" />}
@@ -757,22 +1049,23 @@ export function BackupModal({
             <div className="grid grid-cols-2 gap-2 pt-1">
               <button
                 type="button"
-                onClick={handleCopyText}
-                disabled={filteredLogs.length === 0}
-                className="py-2.5 px-3 bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 text-xs font-medium rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                onClick={handleShare}
+                disabled={!hasData}
+                className="py-2.5 px-3 bg-zinc-900/80 hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed border border-emerald-800/40 text-emerald-300 text-xs font-semibold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                title="Compartilhar ou salvar no Drive, Arquivos ou WhatsApp"
               >
-                {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-zinc-400" />}
-                <span>{copied ? 'Copiado!' : 'Copiar Dados'}</span>
+                <Share2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Salvar / Compartilhar (APK)</span>
               </button>
 
               <button
                 type="button"
-                onClick={handleShare}
-                disabled={filteredLogs.length === 0}
-                className="py-2.5 px-3 bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 text-xs font-medium rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                onClick={handleCopyText}
+                disabled={!hasData}
+                className="py-2.5 px-3 bg-zinc-900/80 hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed border border-zinc-800 text-zinc-300 text-xs font-medium rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
               >
-                <Share2 className="w-3.5 h-3.5 text-zinc-400" />
-                <span>Outros Apps</span>
+                {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-zinc-400" />}
+                <span>{copied ? 'Copiado!' : 'Copiar Texto'}</span>
               </button>
             </div>
           </div>
@@ -781,7 +1074,7 @@ export function BackupModal({
             <p className="text-[11px] text-zinc-400 leading-relaxed flex items-center gap-1.5">
               <AlertCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
               <span>
-                Toque em <strong>Enviar no WhatsApp</strong> para abrir o WhatsApp na hora, ou em <strong>Salvar no Celular</strong> para baixar o arquivo.
+                <strong>Dica para Celular/APK:</strong> Se o download automático não for concluído pelo app, toque em <strong>Salvar / Compartilhar (APK)</strong> para salvar diretamente no Google Drive, WhatsApp ou Gerenciador de Arquivos do Android.
               </span>
             </p>
           </div>
