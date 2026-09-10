@@ -124,15 +124,33 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       const recomp = Number(item.recompensasExtra || 0);
       const outras = Number(item.outrasFontes || item.anjo || 0);
 
+      let finalBat = parsedBat;
+      let finalCusto = parsedCustoEnergia;
+      const isElec = (json.perfilVeiculo?.vehicleType || initialCarProfile?.vehicleType) !== 'combustao';
+      const aut = json.perfilVeiculo?.estimatedAutonomyKm || initialCarProfile?.estimatedAutonomyKm || (isElec ? 300 : 450);
+      const cap = parsedCapBat || json.perfilVeiculo?.batteryCapacityKwh || initialCarProfile?.batteryCapacityKwh || (isElec ? 53.6 : 50);
+      const valK = parsedValKwh || json.perfilVeiculo?.kwhCostRate || initialCarProfile?.kwhCostRate || (isElec ? 1.05 : 5.80);
+
+      // Auto-cálculo da sobra de bateria e custo pela rodagem sem necessidade de confirmação
+      if (parsedKm > 0 && finalBat <= 0) {
+        const consumedPct = Math.min(100, Math.round((parsedKm / aut) * 100));
+        finalBat = Math.max(0, 100 - consumedPct);
+      }
+      if (parsedKm > 0 && finalCusto <= 0) {
+        const consumedPct = finalBat > 0 ? Math.max(0, 100 - finalBat) : Math.min(100, Math.round((parsedKm / aut) * 100));
+        const energyConsumedKwh = Math.round(((consumedPct / 100) * cap) * 100) / 100;
+        finalCusto = parseFloat((energyConsumedKwh * valK).toFixed(2));
+      }
+
       return {
         id: date,
         date,
         isDayOff,
         kmRodado: parsedKm,
-        sobrouBateria: parsedBat,
-        valorKwh: parsedValKwh,
-        capacidadeBateria: parsedCapBat,
-        custoEnergia: parsedCustoEnergia,
+        sobrouBateria: finalBat,
+        valorKwh: parsedValKwh || valK,
+        capacidadeBateria: parsedCapBat || cap,
+        custoEnergia: finalCusto,
         diariaCarro: parsedDiaria,
         carExpenses,
         foodExpenses,
@@ -274,7 +292,9 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
         const bruto = l.resumoDia?.faturamentoBruto || (total99 + totalUber + totalPart + recomp + outras);
         const despTot = l.resumoDia?.totalDespesas || (custoEnergia + diaria + despCarro + despAlim);
         const liquido = l.resumoDia?.resultadoLiquido || (bruto - despTot);
-        const status = l.status || (l.isDayOff ? "Folga" : "Trabalhado");
+        const isOff = Boolean(l.isDayOff);
+        const workedOnOffDay = isOff && (bruto > 0 || km > 0);
+        const status = l.status || (workedOnOffDay ? "Folga Trabalhada" : isOff ? "Folga" : "Trabalhado");
 
         rows.push([
           date, "", status, km, bat,
@@ -382,8 +402,45 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
 
       // Split by lines, then by tabs (standard for Excel/Sheets copy-paste)
       // If it doesn't look like TSV, try CSV (semicolon or comma)
-      const lines = pastedText.split(/\r?\n/).filter(line => line.trim() !== '');
-      
+      let lines = pastedText.split(/\r?\n/).filter(line => line.trim() !== '');
+
+      // NEW: Detection for key-value expenses (e.g., "Financiamento 38/60 R$4.000,00")
+      // Only do this if it's a short list (e.g. less than 20 lines) to avoid false positives on large backups
+      const expenseRegex = /^(.*?)\s+(?:R?\$?\s*)?([\d.,]+)\s*$/i;
+      const isExpenseList = lines.length > 0 && lines.length < 30 && lines.every(line => expenseRegex.test(line.trim()));
+
+      if (isExpenseList) {
+        // Transform into a table structure that parseAllSheets understands
+        const structuredLines = [
+          ['Contas Fixas'], // This triggers isFixedHeader
+          ['Descrição', 'Valor', 'Parcelas']
+        ];
+        
+        lines.forEach(line => {
+          const match = line.trim().match(expenseRegex);
+          if (match) {
+            const desc = match[1].trim();
+            const val = match[2].replace(',', '.');
+            
+            // Extract installments if present in description (e.g., "38/60")
+            const instMatch = desc.match(/(\d+\/\d+)$/);
+            const name = instMatch ? desc.replace(instMatch[1], '').trim() : desc;
+            const inst = instMatch ? instMatch[1] : '';
+            
+            structuredLines.push([name, val, inst]);
+          }
+        });
+
+        const pasteResults: ParsedResult[] = [{
+          sheetName: 'Despesas Coladas',
+          data: structuredLines
+        }];
+        
+        setDirectBackupData(null);
+        processData(pasteResults);
+        return;
+      }
+
       // Detection of separator
       let separator = '\t';
       const firstLine = lines[0] || '';
@@ -458,30 +515,37 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
     allResults.forEach(sheet => {
       let headerIdx = -1;
       let headerRow: any[] = [];
+      let bestHeaderScore = 0;
       
-      for (let i = 0; i < Math.min(sheet.data.length, 25); i++) {
+      for (let i = 0; i < Math.min(sheet.data.length, 150); i++) {
         const row = sheet.data[i];
         if (!row || !Array.isArray(row)) continue;
         
         const rowStr = row.join(' ').toLowerCase();
-        const isFixedHeader = (rowStr.includes('despesas do mês') || rowStr.includes('despesas do mes') || 
-                              rowStr.includes('gastos fixos') || rowStr.includes('custos fixos') ||
-                              rowStr.includes('resumo de despesas') || rowStr.includes('contas do mês') ||
-                              rowStr.includes('contas do mes') || rowStr.includes('contas fixas') ||
-                              rowStr.includes('despesas fixas') || rowStr.includes('custo mensal') ||
-                              rowStr.includes('despesas mensais') || rowStr.includes('custos mensais') ||
-                              rowStr.includes('fixas do mês') || rowStr.includes('fixas do mes'));
         
-        if (isFixedHeader) continue;
+        // Skip obvious fixed expense headers to avoid false positives
+        if (rowStr.includes('despesas do mês') || rowStr.includes('despesa fixa') || rowStr.includes('contas fixas') || rowStr.includes('parcela')) {
+          continue;
+        }
 
-        const keywords = row.filter(cell => /data|date|dia|uber|99|total|ganho|km|período|valor|receita|mês|mes|gasto|despesa|custo|saída|saida/i.test(String(cell)));
-        const hasDateKeyword = row.some(cell => /^(data|date|dia|vencimento)$/i.test(String(cell)));
+        const keywords = row.filter(cell => /data|date|dia|uber|99|particular|total|ganho|km|período|valor|receita|mês|mes|gasto|despesa|custo|status|bateria/i.test(String(cell)));
+        const hasDateKeyword = row.some(cell => /^(data|date|dia|vencimento)$/i.test(String(cell).trim()));
+        const hasAppKeyword = row.some(cell => /uber|99|particular/i.test(String(cell).trim()));
         
-        // Stricter check: at least 3 keywords, or DATA/DATE + 1 other keyword
-        if (keywords.length >= 3 || (hasDateKeyword && keywords.length >= 2)) {
+        let score = keywords.length;
+        if (hasDateKeyword) score += 5;
+        if (hasAppKeyword) score += 5;
+        if (rowStr.includes('km rodado')) score += 5;
+        if (rowStr.includes('status')) score += 2;
+        if (rowStr.includes('resultado líquido')) score += 5;
+
+        // Extra penalty for expense tables
+        if (rowStr.includes('competência') || rowStr.includes('categoria')) score -= 10;
+
+        if (score >= 4 && score > bestHeaderScore) {
+          bestHeaderScore = score;
           headerIdx = i;
           headerRow = row;
-          break;
         }
       }
 
@@ -522,12 +586,21 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       const recompensasIdx = headerRow.findIndex(h => /recompensa|gorjeta|gratificação|gratificacao|tip/i.test(String(h)) && !/uber|99|poup|pop/i.test(String(h)));
       const outrasFontesIdx = headerRow.findIndex(h => /anjo|outras fontes|outros ganhos|outra fonte|anj|extra/i.test(String(h)));
 
+      const custoEnergiaIdx = headerRow.findIndex(h => /custo.*energia|custo.*combust|gasto.*energia|gasto.*combust|combust[ií]vel|abastecimento|gasolina|etanol|diesel|posto|energia.*recarga/i.test(String(h)));
+      const diariaCarroIdx = headerRow.findIndex(h => /di[aá]ria|aluguel|loca[cç][aã]o|rent/i.test(String(h)) && !/outr|extra|desp/i.test(String(h)));
+
       const washIdx = headerRow.findIndex(h => /lavagem|limpeza|wash|banho|lavado|ducha/i.test(String(h)));
       const tollIdx = headerRow.findIndex(h => /pedagio|pedágio|toll|ped|sem parar|conectcar|veloe|tags|tag/i.test(String(h)));
       const parkingIdx = headerRow.findIndex(h => /estacionamento|parking|estac|garagem|vaga/i.test(String(h)));
       const maintenanceIdx = headerRow.findIndex(h => /manutenção|manutencao|mecanico|mecânico|maintenance|manut|oficina|peças|pecas|pneu|revisão|revisao|óleo|oleo|filtro/i.test(String(h)));
-      const publicChargingIdx = headerRow.findIndex(h => /carregamento|eletroposto|energia|recarga|eletrico|público|publico|combustível|combustivel|gasolina|etanol|diesel|posto|abastecimento|gas/i.test(String(h)));
-      const otherExpIdx = headerRow.findIndex(h => /desp carro|desp\. carro|despesas carro|despesa carro|outras despesas|outros gastos|extra|despesas|despesa|gastos|gasto|custos|custo|diversos|saída|saida|outros|aluguel|locação|locacao|seguro|ipva|taxa|licenciamento|multa/i.test(String(h)));
+      const publicChargingIdx = headerRow.findIndex(h => /recarga.*externa|recarga.*rua|recarga.*p[uú]blica|eletroposto.*p[uú]blico|carregamento.*externo/i.test(String(h)));
+      const otherExpIdx = headerRow.findIndex(h => {
+        const str = String(h).toLowerCase();
+        if (/total|geral|alimenta|comida|energia|combust|posto|kwh|ganho|receita|faturam|anjo|uber|99|di[aá]ria|aluguel|loca[cç]|km|dist|recompensa|gorjeta/i.test(str)) {
+          return false;
+        }
+        return /desp.*carro|despesas.*carro|despesa.*carro|outras.*despesas.*carro|gastos.*carro|custos.*carro|outros.*carro/i.test(str);
+      });
 
       const lunchIdx = headerRow.findIndex(h => /almoço|almoco|lunch|refeição|refeicao/i.test(String(h)));
       const dinnerIdx = headerRow.findIndex(h => /jantar|janta|dinner/i.test(String(h)));
@@ -539,8 +612,6 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       const sobrouBatIdx = headerRow.findIndex(h => /bateria|soc|carga|sobrou/i.test(String(h)));
       const valorKwhIdx = headerRow.findIndex(h => /valor.*kwh|pre[cç]o.*kwh|tarifa/i.test(String(h)));
       const capBateriaIdx = headerRow.findIndex(h => /capacidade.*bateria|capacidade.*kwh/i.test(String(h)));
-      const custoEnergiaIdx = headerRow.findIndex(h => /custo.*energia|custo.*combust|gasto.*energia/i.test(String(h)));
-      const diariaCarroIdx = headerRow.findIndex(h => /di[aá]ria.*carro|diaria.*carro|loca[cç][aã]o.*di[aá]ria/i.test(String(h)));
 
       const parseMonthYear = (str: string) => {
         const months = ['janeiro', 'fevereiro', 'março', 'marco', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
@@ -640,8 +711,8 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
           else if (firstCell.includes('escala')) detectedCarProfile.workScheduleType = String(secondCell || '').trim();
         }
 
-        // Check for Fixed Expenses Header first, even if it's the headerIdx row
-        const isTotalRow = rowStr.includes('total mês') || rowStr.includes('total mes') || rowStr.includes('valor total') || rowStr.includes('total geral');
+        // Check for Fixed Expenses Header
+        const isTotalRow = rowStr.includes('total mês') || rowStr.includes('total mes') || rowStr.includes('valor total') || rowStr.includes('total geral') || rowStr.includes('total despesas');
         
         // Helper to check for food keywords
         const isFoodLabel = (str: string) => {
@@ -657,9 +728,14 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                               rowStr.includes('despesas mensais') || rowStr.includes('custos mensais') ||
                               rowStr.includes('fixas do mês') || rowStr.includes('fixas do mes')) && !isTotalRow;
         
+        // Stop conditions for fixed expenses block
+        if (isTotalRow || i === headerIdx || rowStr.includes('lançamentos diários') || rowStr.includes('faturamento')) {
+          inFixedExpensesBlock = false;
+        }
+
         if (isFixedHeader) {
           inFixedExpensesBlock = true;
-          // Check if data is on the same row (horizontal list)
+          // Check if data is on the same row (horizontal list, older exports)
           row.forEach((cell, cellIdx) => {
             const val = row[cellIdx + 1];
             if (cell === null || cell === undefined) return;
@@ -681,25 +757,31 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
               });
             }
           });
-          if (i === headerIdx) continue;
+          continue; // Skip this header row
         }
 
-        if (isTotalRow) {
+        if (inFixedExpensesBlock) {
+          // Check for vertical list (like in new backup exports)
+          const isColumnHeader = rowStr.includes('despesa fixa') && rowStr.includes('valor');
+          if (!isColumnHeader && row[0] && row[1]) {
+            const label = String(row[0]).trim();
+            const val = parseCurrency(row[1]);
+            if (label && val > 0 && !label.toLowerCase().includes('total') && !label.toLowerCase().includes('despesa fixa')) {
+              sheetFixedCount++;
+              allFixedExpenses.push({ 
+                id: `imp-f-${Math.random()}`, 
+                name: label, 
+                value: val 
+              });
+            }
+          }
+          continue; // Skip processing as daily logs!
+        }
+
+        if (i === headerIdx) {
           inFixedExpensesBlock = false;
-          if (i === headerIdx) continue;
+          continue;
         }
-
-        // Safety: if row has many numbers, it's likely a data row, not a fixed expense block
-        const numbersInRow = row.filter(c => {
-          if (typeof c === 'number') return true;
-          if (typeof c === 'string' && /^\d+([.,]\d+)?$/.test(c.trim())) return true;
-          return false;
-        }).length;
-        if (numbersInRow >= 3) {
-          inFixedExpensesBlock = false;
-        }
-
-        if (i === headerIdx) continue;
 
         let dateStr = '';
         if (dateIdx !== -1 && row[dateIdx] !== null && row[dateIdx] !== undefined) {
@@ -745,7 +827,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
           // Reconhecimento de status folga
           if (statusIdx !== -1 && row[statusIdx] !== null && row[statusIdx] !== undefined) {
             const sStr = String(row[statusIdx]).toLowerCase();
-            if (sStr.includes('folga') && !sStr.includes('trabalhad')) {
+            if (sStr.includes('folga')) {
               log.isDayOff = true;
             }
           }
@@ -942,6 +1024,28 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
         }
       }
       mappingInfo[sheet.sheetName].fixedFound = sheetFixedCount;
+    });
+
+    // Auto-cálculo da sobra de bateria e custo pela rodagem quando em massa (sem necessidade de confirmação)
+    const isElec = (detectedCarProfile?.vehicleType || initialCarProfile?.vehicleType) !== 'combustao';
+    const aut = detectedCarProfile?.estimatedAutonomyKm || initialCarProfile?.estimatedAutonomyKm || (isElec ? 300 : 450);
+    const cap = detectedCarProfile?.batteryCapacityKwh || initialCarProfile?.batteryCapacityKwh || (isElec ? 53.6 : 50);
+    const valK = detectedCarProfile?.kwhCostRate || initialCarProfile?.kwhCostRate || (isElec ? 1.05 : 5.80);
+
+    Object.values(dailyLogsMap).forEach((log: any) => {
+      if (log.kmRodado > 0) {
+        if (log.sobrouBateria === undefined || log.sobrouBateria === null || log.sobrouBateria <= 0) {
+          const consumedPct = Math.min(100, Math.round((log.kmRodado / aut) * 100));
+          log.sobrouBateria = Math.max(0, 100 - consumedPct);
+        }
+        if (!log.custoEnergia || log.custoEnergia <= 0) {
+          const consumedPct = log.sobrouBateria !== undefined && log.sobrouBateria !== null ? Math.max(0, 100 - log.sobrouBateria) : Math.min(100, Math.round((log.kmRodado / aut) * 100));
+          const energyConsumedKwh = Math.round(((consumedPct / 100) * cap) * 100) / 100;
+          log.custoEnergia = parseFloat((energyConsumedKwh * valK).toFixed(2));
+        }
+        if (!log.valorKwh || log.valorKwh <= 0) log.valorKwh = valK;
+        if (!log.capacidadeBateria || log.capacidadeBateria <= 0) log.capacidadeBateria = cap;
+      }
     });
 
     return { 
@@ -1325,7 +1429,14 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
         {/* Footer */}
         <div className="p-4 border-t border-zinc-800 bg-zinc-900/50 flex justify-end gap-3">
           <button 
-            onClick={onClose}
+            onClick={() => {
+              setResults([]);
+              setError(null);
+              setImportSummary(null);
+              setMappingInfo({});
+              setDirectBackupData(null);
+              onClose();
+            }}
             className="px-4 py-2 text-xs font-bold text-zinc-400 hover:text-white transition-colors"
           >
             Cancelar

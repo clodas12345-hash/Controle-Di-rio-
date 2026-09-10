@@ -45,6 +45,7 @@ interface DeepSweepModalProps {
   onBack?: () => void;
   report: DeepSweepReport | null;
   onRerun: () => void;
+  onClearCarExpenses?: () => void;
 }
 
 export const DeepSweepModal: React.FC<DeepSweepModalProps> = ({
@@ -53,6 +54,7 @@ export const DeepSweepModal: React.FC<DeepSweepModalProps> = ({
   onBack,
   report,
   onRerun,
+  onClearCarExpenses,
 }) => {
   if (!isOpen || !report) return null;
 
@@ -260,9 +262,21 @@ export const DeepSweepModal: React.FC<DeepSweepModalProps> = ({
               <div className="flex justify-between items-center text-zinc-300">
                 <span className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-blue-400"></span>
-                  Despesas do Veículo
+                  Despesas Extras do Veículo
                 </span>
-                <span className="font-mono font-medium">{formatBRL(report.totalCarExpenses)}</span>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono font-medium">{formatBRL(report.totalCarExpenses)}</span>
+                  {onClearCarExpenses && report.totalCarExpenses > 0 && (
+                    <button
+                      type="button"
+                      onClick={onClearCarExpenses}
+                      className="text-[10px] text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 px-2 py-0.5 rounded-lg border border-rose-500/20 transition-all cursor-pointer font-sans"
+                      title="Zerar despesas extras de carro não cadastradas ou importadas indevidamente"
+                    >
+                      Zerar Extras
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="flex justify-between items-center text-zinc-300">
                 <span className="flex items-center gap-2">

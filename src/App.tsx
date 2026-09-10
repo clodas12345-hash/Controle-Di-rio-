@@ -142,6 +142,7 @@ interface FixedExpense {
   name: string;
   value: number;
   installments?: string;
+  startDate?: string; // Format YYYY-MM
 }
 
 interface CarProfile {
@@ -266,12 +267,11 @@ const MONTH_NAMES = [
 
 const WEEK_DAYS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
-// Preloaded fixed expenses generator by month (standardized to August configuration: R$ 7.093,05)
-const getPreloadedFixedExpenses = (month: number): FixedExpense[] => {
+// Preloaded fixed expenses generator by month
+const getPreloadedFixedExpenses = (month: number, year: number = 2024): FixedExpense[] => {
   const pad = (n: number) => String(n).padStart(2, '0');
   
-  return [
-    { id: '1', name: 'Financiamento', value: 4000.00, installments: `${pad(month + 6)}/60` },
+  const expenses: FixedExpense[] = [
     { id: '2', name: 'Seguro', value: 698.00 },
     { id: '3', name: 'MEI', value: 87.05 },
     { id: '4', name: 'IPVA', value: 750.00 },
@@ -282,6 +282,22 @@ const getPreloadedFixedExpenses = (month: number): FixedExpense[] => {
     { id: '10', name: 'Suspensão', value: 259.00, installments: '06/06' },
     { id: '11', name: 'Mão de obra Susp', value: 163.00, installments: '06/06' },
   ];
+
+  // Financiamento: Parcela 01/60 começou estritamente em Outubro de 2024 (2024-10).
+  // Em Setembro de 2024 ou meses anteriores, ela NÃO existia!
+  const monthsFromOct2024 = (year - 2024) * 12 + (month - 10);
+  if (monthsFromOct2024 >= 0 && monthsFromOct2024 < 60) {
+    const instNum = monthsFromOct2024 + 1;
+    expenses.unshift({
+      id: '1',
+      name: 'Financiamento',
+      value: 4000.00,
+      installments: `${pad(instNum)}/60`,
+      startDate: '2024-10'
+    });
+  }
+
+  return expenses;
 };
 
 // Função utilitária para normalizar o nome de despesas fixas para comparação e evitar duplicidades
@@ -381,7 +397,12 @@ const incrementInstallment = (installments?: string, distance: number = 1): stri
   const info = parseInstallmentInfo(installments);
   if (info) {
     const nextVal = info.current + distance;
-    if (nextVal > info.total || nextVal <= 0) return undefined;
+    
+    // Termination logic:
+    // Se passar do total de parcelas, a despesa encerrou -> undefined
+    if (nextVal > info.total) return undefined;
+    // Se for menor que 1 (ex: mês anterior à 1ª parcela), ela NÃO existia ainda -> undefined
+    if (nextVal < 1) return undefined;
     
     const currStr = info.padCurrent ? String(nextVal).padStart(2, '0') : String(nextVal);
     const totalStr = info.padTotal ? String(info.total).padStart(2, '0') : String(info.total);
@@ -389,6 +410,71 @@ const incrementInstallment = (installments?: string, distance: number = 1): stri
     return `${currStr} ${info.separator} ${totalStr}`.replace(/\s+/g, ' ').replace(/\s*\/\s*/, '/').trim();
   }
   return installments;
+};
+
+// Saneamento e alinhamento automático de parcelas e despesas fixas
+export const sanitizeFixedExpensesMap = (expensesMap: Record<string, FixedExpense[]>): Record<string, FixedExpense[]> => {
+  if (!expensesMap || typeof expensesMap !== 'object') return {};
+  const cleaned: Record<string, FixedExpense[]> = {};
+
+  Object.entries(expensesMap).forEach(([mKey, list]) => {
+    if (!Array.isArray(list)) return;
+    const [yStr, mStr] = mKey.split('-');
+    const year = parseInt(yStr, 10);
+    const month = parseInt(mStr, 10);
+
+    const filtered = list.filter(exp => {
+      const norm = normalizeExpenseName(exp.name);
+
+      // Regra 1: O Financiamento iniciou estritamente em Outubro de 2024 (2024-10) com a parcela 01/60.
+      // Em Setembro de 2024 (2024-09) ou qualquer mês anterior, ele NÃO existia!
+      if (norm.includes('financiamento')) {
+        if (year < 2024 || (year === 2024 && month < 10)) {
+          return false;
+        }
+      }
+
+      // Regra 2: Se possuir startDate explícito, não pode existir antes dele
+      if (exp.startDate) {
+        const [sYear, sMonth] = exp.startDate.split('-').map(Number);
+        if (year < sYear || (year === sYear && month < sMonth)) {
+          return false;
+        }
+      }
+
+      // Regra 3: Validação de parcelas (não pode ser parcela 0 ou negativa, nem superior ao total)
+      if (exp.installments) {
+        const info = parseInstallmentInfo(exp.installments);
+        if (info) {
+          if (info.current < 1 || info.current > info.total) {
+            return false;
+          }
+        }
+      }
+
+      return true;
+    }).map(exp => {
+      const norm = normalizeExpenseName(exp.name);
+      // Alinhamento exato de parcelas do Financiamento: Outubro/2024 = 01/60, Novembro/2024 = 02/60, etc.
+      if (norm.includes('financiamento') && (year > 2024 || (year === 2024 && month >= 10))) {
+        const monthsFromOct2024 = (year - 2024) * 12 + (month - 10);
+        if (monthsFromOct2024 >= 0 && monthsFromOct2024 < 60) {
+          const installmentNum = monthsFromOct2024 + 1;
+          const padNum = String(installmentNum).padStart(2, '0');
+          return {
+            ...exp,
+            startDate: '2024-10',
+            installments: `${padNum}/60`
+          };
+        }
+      }
+      return exp;
+    });
+
+    cleaned[mKey] = filtered;
+  });
+
+  return cleaned;
 };
 
 const getPreloadedLogs = (year: number, month: number): DailyLog[] => {
@@ -439,22 +525,22 @@ const sanitizeDailyLog = (l: DailyLog): DailyLog => {
       coffee: sanitizeNum(l.foodExpenses?.coffee)
     },
     appUber: {
-      rides: sanitizeNum(l.appUber?.rides),
-      earnings: sanitizeNum(l.appUber?.earnings),
+      rides: [1.04, 1.05, 5.8].includes(sanitizeNum(l.appUber?.earnings)) ? 0 : sanitizeNum(l.appUber?.rides),
+      earnings: [1.04, 1.05, 5.8].includes(sanitizeNum(l.appUber?.earnings)) ? 0 : sanitizeNum(l.appUber?.earnings),
       bonus: sanitizeNum(l.appUber?.bonus)
     },
     app99: {
-      rides: sanitizeNum(l.app99?.rides),
-      earnings: sanitizeNum(l.app99?.earnings),
+      rides: [1.04, 1.05, 5.8].includes(sanitizeNum(l.app99?.earnings)) ? 0 : sanitizeNum(l.app99?.rides),
+      earnings: [1.04, 1.05, 5.8].includes(sanitizeNum(l.app99?.earnings)) ? 0 : sanitizeNum(l.app99?.earnings),
       bonus: sanitizeNum(l.app99?.bonus)
     },
     appParticular: {
-      rides: sanitizeNum(l.appParticular?.earnings) > 0 ? sanitizeNum(l.appParticular?.rides) : 0,
-      earnings: sanitizeNum(l.appParticular?.earnings)
+      rides: [1.04, 1.05, 5.8].includes(sanitizeNum(l.appParticular?.earnings)) ? 0 : (sanitizeNum(l.appParticular?.earnings) > 0 ? sanitizeNum(l.appParticular?.rides) : 0),
+      earnings: [1.04, 1.05, 5.8].includes(sanitizeNum(l.appParticular?.earnings)) ? 0 : sanitizeNum(l.appParticular?.earnings)
     },
-    recompensasExtra: sanitizeNum(l.recompensasExtra),
-    outrasFontes: sanitizeNum(l.outrasFontes !== undefined ? l.outrasFontes : l.anjo),
-    anjo: sanitizeNum(l.anjo !== undefined ? l.anjo : l.outrasFontes)
+    recompensasExtra: [1.04, 1.05, 5.8].includes(sanitizeNum(l.recompensasExtra)) ? 0 : sanitizeNum(l.recompensasExtra),
+    outrasFontes: [1.04, 1.05, 5.8].includes(sanitizeNum(l.outrasFontes !== undefined ? l.outrasFontes : l.anjo)) ? 0 : sanitizeNum(l.outrasFontes !== undefined ? l.outrasFontes : l.anjo),
+    anjo: [1.04, 1.05, 5.8].includes(sanitizeNum(l.anjo !== undefined ? l.anjo : l.outrasFontes)) ? 0 : sanitizeNum(l.anjo !== undefined ? l.anjo : l.outrasFontes)
   };
 };
 
@@ -554,13 +640,17 @@ export default function App() {
     return TRULY_BLANK_CAR_PROFILE;
   });
 
-  // Fixed Monthly Expenses State - Inicia 100% zerado, sem despesas pré-carregadas
+  // Fixed Monthly Expenses State - Inicia com dados limpos e saneados
   const [fixedExpensesByMonth, setFixedExpensesByMonth] = useState<Record<string, FixedExpense[]>>(() => {
     const saved = localStorage.getItem('driver_fixed_expenses_v6_by_month');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (typeof parsed === 'object' && parsed !== null) return parsed;
+        if (typeof parsed === 'object' && parsed !== null) {
+          const sanitized = sanitizeFixedExpensesMap(parsed);
+          localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify(sanitized));
+          return sanitized;
+        }
       } catch (e) {
         console.error(e);
       }
@@ -569,11 +659,32 @@ export default function App() {
   });
 
   const currentMonthKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
-  const fixedExpenses = fixedExpensesByMonth[currentMonthKey] || [];
+  const allFixedExpenses = fixedExpensesByMonth[currentMonthKey] || [];
+  const fixedExpenses = allFixedExpenses.filter(exp => {
+    const norm = normalizeExpenseName(exp.name);
+    // Financiamento iniciou estritamente em Outubro de 2024 (2024-10) com a parcela 01/60.
+    // Em Setembro/2024 ou meses anteriores, ele NUNCA deve ser listado.
+    if (norm.includes('financiamento')) {
+      if (selectedYear < 2024 || (selectedYear === 2024 && selectedMonth < 10)) {
+        return false;
+      }
+    }
+    if (!exp.startDate) return true;
+    const [startYear, startMonth] = exp.startDate.split('-').map(Number);
+    if (startYear > selectedYear) return false;
+    if (startYear === selectedYear && startMonth > selectedMonth) return false;
+    return true;
+  });
 
   const getEffectiveMonthlyCost = (year: number, month: number): number => {
     const mKey = `${year}-${String(month).padStart(2, '0')}`;
-    const monthExpenses = fixedExpensesByMonth[mKey] || [];
+    const monthExpenses = (fixedExpensesByMonth[mKey] || []).filter(exp => {
+      const norm = normalizeExpenseName(exp.name);
+      if (norm.includes('financiamento')) {
+        if (year < 2024 || (year === 2024 && month < 10)) return false;
+      }
+      return true;
+    });
     const monthFixedSum = monthExpenses.reduce((sum, item) => sum + item.value, 0);
     return monthFixedSum > 0 ? monthFixedSum : (carProfile.monthlyCarExpense || 0);
   };
@@ -785,9 +896,22 @@ export default function App() {
   }, [sweepNotification]);
 
   // Handle Excel Data Import
-  const handleExcelImport = (importedLogs: DailyLog[], importedFixedExpenses: FixedExpense[] = []) => {
+  const handleExcelImport = (importedLogs: DailyLog[], importedFixedExpenses: FixedExpense[] = [], importedCarProfile?: any) => {
     if (!importedLogs || importedLogs.length === 0) {
-      if (importedFixedExpenses.length === 0) return;
+      if (importedFixedExpenses.length === 0 && !importedCarProfile) return;
+    }
+
+    if (importedCarProfile) {
+      setCarProfile(prev => {
+        const merged = { ...prev };
+        Object.keys(importedCarProfile).forEach(key => {
+          if (importedCarProfile[key] !== undefined && importedCarProfile[key] !== null && importedCarProfile[key] !== '') {
+            (merged as any)[key] = importedCarProfile[key];
+          }
+        });
+        localStorage.setItem('driver_car_profile_v1', JSON.stringify(merged));
+        return merged;
+      });
     }
 
     // Update Logs
@@ -802,17 +926,28 @@ export default function App() {
           if (!newLog.date) return;
           const existing = logsMap.get(newLog.date);
           
+          const isElec = carProfile.vehicleType === 'eletrico';
+          const vKwh = newLog.valorKwh > 0 ? newLog.valorKwh : (carProfile.kwhCostRate || (isElec ? 1.05 : 5.80));
+          const cBat = newLog.capacidadeBateria > 0 ? newLog.capacidadeBateria : (carProfile.batteryCapacityKwh || (isElec ? 53.6 : 50));
+          const estAut = carProfile.estimatedAutonomyKm || (isElec ? 300 : 450);
+
           if (existing) {
             const finalKm = newLog.kmRodado > 0 ? newLog.kmRodado : existing.kmRodado;
+            let finalSobrouBateria = (newLog.sobrouBateria !== undefined && newLog.sobrouBateria !== null && newLog.sobrouBateria > 0)
+              ? newLog.sobrouBateria
+              : (existing.sobrouBateria !== undefined && existing.sobrouBateria !== null && existing.sobrouBateria > 0 ? existing.sobrouBateria : null);
+
+            // Auto-cálculo da sobra de bateria no lançamento em massa sem necessidade de confirmação
+            if (finalKm > 0 && (finalSobrouBateria === null || finalSobrouBateria <= 0)) {
+              const consumedPct = Math.min(100, Math.round((finalKm / estAut) * 100));
+              finalSobrouBateria = Math.max(0, 100 - consumedPct);
+            }
+
             let finalCusto = (newLog.custoEnergia && newLog.custoEnergia > 0) 
               ? newLog.custoEnergia 
               : (existing.custoEnergia > 0 ? existing.custoEnergia : 0);
             if (finalKm > 0 && finalCusto <= 0) {
-              const isElec = carProfile.vehicleType === 'eletrico';
-              const vKwh = carProfile.kwhCostRate || (isElec ? 1.05 : 5.80);
-              const cBat = carProfile.batteryCapacityKwh || (isElec ? 53.6 : 50);
-              const estAut = carProfile.estimatedAutonomyKm || (isElec ? 300 : 450);
-              const consumedPct = Math.min(95, (finalKm / estAut) * 100);
+              const consumedPct = finalSobrouBateria !== null ? Math.max(0, 100 - finalSobrouBateria) : Math.min(100, Math.round((finalKm / estAut) * 100));
               finalCusto = parseFloat(((consumedPct / 100) * cBat * vKwh).toFixed(2));
             }
 
@@ -839,6 +974,9 @@ export default function App() {
             logsMap.set(newLog.date, {
               ...existing,
               kmRodado: finalKm,
+              sobrouBateria: finalSobrouBateria,
+              valorKwh: existing.valorKwh > 0 ? existing.valorKwh : vKwh,
+              capacidadeBateria: existing.capacidadeBateria > 0 ? existing.capacidadeBateria : cBat,
               custoEnergia: finalCusto,
               appUber: {
                 ...existing.appUber,
@@ -875,6 +1013,21 @@ export default function App() {
             });
           } else {
             const sanitized = sanitizeDailyLog(newLog);
+
+            // Auto-cálculo da sobra de bateria no lançamento em massa sem necessidade de confirmação
+            if (sanitized.kmRodado > 0 && (sanitized.sobrouBateria === null || sanitized.sobrouBateria <= 0)) {
+              const consumedPct = Math.min(100, Math.round((sanitized.kmRodado / estAut) * 100));
+              sanitized.sobrouBateria = Math.max(0, 100 - consumedPct);
+            }
+
+            if (sanitized.kmRodado > 0 && sanitized.custoEnergia <= 0) {
+              const consumedPct = sanitized.sobrouBateria !== null ? Math.max(0, 100 - sanitized.sobrouBateria) : Math.min(100, Math.round((sanitized.kmRodado / estAut) * 100));
+              sanitized.custoEnergia = parseFloat(((consumedPct / 100) * cBat * vKwh).toFixed(2));
+            }
+
+            if (sanitized.valorKwh <= 0) sanitized.valorKwh = vKwh;
+            if (sanitized.capacidadeBateria <= 0) sanitized.capacidadeBateria = cBat;
+
             if (sanitized.appUber.earnings > 0 && sanitized.appUber.rides <= 0) {
               sanitized.appUber.rides = Math.max(1, Math.round(sanitized.appUber.earnings / 23));
             }
@@ -980,6 +1133,16 @@ export default function App() {
   const [prevDayPromptInfo, setPrevDayPromptInfo] = useState<{ prevDateStr: string; formDate: string } | null>(null);
   const [confirmHighKmPrompt, setConfirmHighKmPrompt] = useState(false);
   const [highKmTargetDate, setHighKmTargetDate] = useState<string>('');
+  const [confirmBatteryEstimatePrompt, setConfirmBatteryEstimatePrompt] = useState(false);
+  const [batteryEstimateInfo, setBatteryEstimateInfo] = useState<{
+    km: number;
+    autonomy: number;
+    consumedPercent: number;
+    remainingPercent: number;
+    energyConsumedKwh: number;
+    estimatedCost: string;
+  } | null>(null);
+  const batteryEstimateDismissedRef = React.useRef(false);
   
   // Rodagem & Bateria States
   const [sobrouBateria, setSobrouBateria] = useState('');
@@ -1095,6 +1258,7 @@ export default function App() {
   const [isAddingFixed, setIsAddingFixed] = useState(false);
   const [editingFixedId, setEditingFixedId] = useState<string | null>(null);
   const [newFixedName, setNewFixedName] = useState('');
+  const [newFixedStartDate, setNewFixedStartDate] = useState('');
   const [newFixedValue, setNewFixedValue] = useState('');
   const [newFixedInstallments, setNewFixedInstallments] = useState('');
   const [confirmingDeleteFixedId, setConfirmingDeleteFixedId] = useState<string | null>(null);
@@ -1136,6 +1300,33 @@ export default function App() {
 
   const fixedExpenseFormRef = React.useRef<HTMLFormElement | null>(null);
   const fixedExpenseInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  // Auto-hide bottom navigation dock during inputs / editing / modal filling
+  const [isInputActive, setIsInputActive] = useState(false);
+  const [isBottomDockCollapsed, setIsBottomDockCollapsed] = useState(false);
+
+  useEffect(() => {
+    const onFocusIn = (e: FocusEvent) => {
+      const el = e.target as HTMLElement;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
+        setIsInputActive(true);
+      }
+    };
+    const onFocusOut = () => {
+      setTimeout(() => {
+        const active = document.activeElement;
+        if (!active || (active.tagName !== 'INPUT' && active.tagName !== 'TEXTAREA' && active.tagName !== 'SELECT')) {
+          setIsInputActive(false);
+        }
+      }, 150);
+    };
+    window.addEventListener('focusin', onFocusIn);
+    window.addEventListener('focusout', onFocusOut);
+    return () => {
+      window.removeEventListener('focusin', onFocusIn);
+      window.removeEventListener('focusout', onFocusOut);
+    };
+  }, []);
 
   useEffect(() => {
     if (logs) {
@@ -1280,7 +1471,8 @@ export default function App() {
   }, [carProfile.nextMaintenanceKm, logs]);
 
   useEffect(() => {
-    localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify(fixedExpensesByMonth));
+    const sanitized = sanitizeFixedExpensesMap(fixedExpensesByMonth);
+    localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify(sanitized));
   }, [fixedExpensesByMonth]);
 
   // Auto-propagation of fixed expenses when a new month is visited
@@ -1332,6 +1524,13 @@ export default function App() {
       if (foundPrevExpenses.length > 0) {
         const monthExpenses: FixedExpense[] = [];
         foundPrevExpenses.forEach(exp => {
+          const norm = normalizeExpenseName(exp.name);
+          // Financiamento iniciou estritamente em Outubro de 2024 (2024-10) com a parcela 01/60.
+          // Em meses anteriores, ele não deve ser propagado!
+          if (norm.includes('financiamento') && (selectedYear < 2024 || (selectedYear === 2024 && selectedMonth < 10))) {
+            return;
+          }
+
           const baseId = exp.id.replace(/^(auto-\d{4}-\d{1,2}-|rep-\d{1,2}-)+/, '');
           
           if (!exp.installments) {
@@ -1502,7 +1701,8 @@ export default function App() {
         ...item,
         name: newFixedName,
         value: val,
-        installments: newFixedInstallments.trim() || undefined
+        installments: newFixedInstallments.trim() || undefined,
+        startDate: newFixedStartDate.trim() || undefined
       } : item));
       setSweepNotification(`Despesa "${newFixedName}" atualizada com sucesso!`);
     } else {
@@ -1514,6 +1714,7 @@ export default function App() {
         setNewFixedName('');
         setNewFixedValue('');
         setNewFixedInstallments('');
+        setNewFixedStartDate('');
         setIsAddingFixed(false);
         return;
       }
@@ -1522,7 +1723,8 @@ export default function App() {
         id: String(Date.now()),
         name: newFixedName,
         value: val,
-        installments: newFixedInstallments.trim() || undefined
+        installments: newFixedInstallments.trim() || undefined,
+        startDate: newFixedStartDate.trim() || undefined
       };
       setFixedExpensesForCurrentMonth(prev => [...prev, newExpense]);
       setSweepNotification(`Despesa "${newFixedName}" adicionada com sucesso!`);
@@ -1541,6 +1743,7 @@ export default function App() {
     setNewFixedName(item.name);
     setNewFixedValue(String(item.value));
     setNewFixedInstallments(item.installments || '');
+    setNewFixedStartDate(item.startDate || '');
     setIsAddingFixed(true);
     setTimeout(() => {
       fixedExpenseFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1554,6 +1757,7 @@ export default function App() {
     setNewFixedName('');
     setNewFixedValue('');
     setNewFixedInstallments('');
+    setNewFixedStartDate('');
   };
 
   const handleDeleteFixedExpense = (id: string) => {
@@ -1760,11 +1964,13 @@ export default function App() {
       return sanitized;
     });
 
-    // 1b. Cleanup invalid fixed expenses (labels like 'null', 'undefined', or purely numbers)
-    const updatedFixed = { ...fixedExpensesByMonth };
+    // 1b. Cleanup invalid fixed expenses and sanitize installments
+    const cleanedFixed = sanitizeFixedExpensesMap(fixedExpensesByMonth);
     let fixedSanitizedCount = 0;
-    Object.keys(updatedFixed).forEach(monthYear => {
-      const originalList = updatedFixed[monthYear];
+    const updatedFixed: Record<string, FixedExpense[]> = {};
+
+    Object.keys(cleanedFixed).forEach(monthYear => {
+      const originalList = cleanedFixed[monthYear];
       const filteredList = originalList.filter(exp => {
         const label = String(exp.name).toLowerCase().trim();
         const isInvalid = ['null', 'undefined', 'nan', ''].includes(label) || /^\d+([.,]\d+)?$/.test(label);
@@ -1918,8 +2124,10 @@ export default function App() {
         newCost = calcByBattery() || calcByKm();
       }
 
-      if (newCost !== null) {
+      if (newCost !== null && (sobrouBateria !== '' || kmRodado !== '')) {
         setCustoEnergia(newCost);
+      } else if (!isEnergyCostOverridden) {
+        setCustoEnergia('');
       }
     }
   }, [sobrouBateria, capacidadeBateria, valorKwh, kmRodado, isEnergyCostOverridden, carProfile, lastEditedEnergyField]);
@@ -2163,6 +2371,37 @@ export default function App() {
     setTimeout(() => setSweepNotification(null), 5000);
   };
 
+  // Batch clear car extra expenses for a specific month (e.g. phantom imported expenses)
+  const handleClearMonthCarExpenses = (monthToClear: number, yearToClear: number) => {
+    const confirm = window.confirm(`Deseja zerar todas as Despesas Extras de Carro (lava-jato, pedágios, estacionamento, recarga externa e outros) do mês de ${MONTH_NAMES[monthToClear - 1]}/${yearToClear}?`);
+    if (!confirm) return;
+
+    setLogs(prevLogs => {
+      const updated = prevLogs.map(log => {
+        const [y, m] = log.date.split('-').map(Number);
+        if (y === yearToClear && m === monthToClear) {
+          return {
+            ...log,
+            carExpenses: {
+              wash: 0,
+              toll: 0,
+              maintenance: 0,
+              parking: 0,
+              publicCharging: 0,
+              other: 0
+            }
+          };
+        }
+        return log;
+      });
+      localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(updated));
+      return updated;
+    });
+
+    setSweepNotification(`Despesas extras de carro de ${MONTH_NAMES[monthToClear - 1]}/${yearToClear} foram zeradas com sucesso!`);
+    setTimeout(() => setSweepNotification(null), 5000);
+  };
+
   // Open modal for a specific date
   const openModalForDate = (dateStr: string) => {
     handleDateChange(dateStr);
@@ -2170,6 +2409,9 @@ export default function App() {
     setModalDeleteStage(0);
     setConfirmPrevDayPrompt(false);
     setPrevDayPromptInfo(null);
+    setConfirmBatteryEstimatePrompt(false);
+    setBatteryEstimateInfo(null);
+    batteryEstimateDismissedRef.current = false;
     setErrorMessage('');
     setTimeout(() => {
       handleLoadCarDataIntoEntry();
@@ -2239,6 +2481,36 @@ export default function App() {
     setTimeout(() => setSweepNotification(null), 4000);
   };
 
+  // Trigger Battery Estimate Pop-up Modal when KM is added without remaining battery
+  const triggerBatteryEstimatePopup = (customKm?: number): boolean => {
+    const num = customKm !== undefined ? customKm : (parseInt(String(kmRodado), 10) || 0);
+    const sobrouVal = String(sobrouBateria || '').trim();
+    const sobrouNum = parseFloat(sobrouVal.replace(',', '.'));
+    
+    // Only trigger if KM is valid and remaining battery is not provided or 0
+    if (num > 0 && (!sobrouVal || isNaN(sobrouNum) || sobrouNum === 0)) {
+      const capNum = parseFloat(String(capacidadeBateria).replace(',', '.')) || parseFloat(carProfile.batteryCapacityKwh) || (carProfile.vehicleType === 'eletrico' ? 53.6 : 50);
+      const valKwhNum = parseFloat(String(valorKwh).replace(',', '.')) || parseFloat(carProfile.kwhCostRate) || (carProfile.vehicleType === 'eletrico' ? 1.05 : 5.80);
+      const autonomy = carProfile.estimatedAutonomyKm || (carProfile.vehicleType === 'eletrico' ? 300 : 500);
+      const consumedPercent = Math.min(100, Math.round((num / autonomy) * 100));
+      const remainingPercent = Math.max(0, 100 - consumedPercent);
+      const energyConsumedKwh = Math.round(((consumedPercent / 100) * capNum) * 100) / 100;
+      const estimatedCost = (energyConsumedKwh * valKwhNum).toFixed(2);
+
+      setBatteryEstimateInfo({
+        km: num,
+        autonomy,
+        consumedPercent,
+        remainingPercent,
+        energyConsumedKwh,
+        estimatedCost
+      });
+      setConfirmBatteryEstimatePrompt(true);
+      return true;
+    }
+    return false;
+  };
+
   // Form Submit / Save
   const handleSaveLog = (e: React.FormEvent) => {
     e.preventDefault();
@@ -2271,6 +2543,12 @@ export default function App() {
       if (!hasPrevData && (!editingLogId || editingLogId === formDate)) {
         setPrevDayPromptInfo({ prevDateStr, formDate });
         setConfirmPrevDayPrompt(true);
+        return;
+      }
+    }
+
+    if (!confirmBatteryEstimatePrompt && !batteryEstimateDismissedRef.current) {
+      if (triggerBatteryEstimatePopup()) {
         return;
       }
     }
@@ -3018,7 +3296,7 @@ export default function App() {
     <div className="min-h-screen bg-[#070709] text-zinc-100 selection:bg-emerald-500/20 selection:text-emerald-300 font-sans antialiased overscroll-y-none">
       
       {/* Dynamic Header */}
-      <header id="main-app-header" className="border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-md sticky top-0 z-30 px-3 sm:px-6 py-3 transition-all relative overflow-x-hidden">
+      <header id="main-app-header" className="border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-md relative z-20 px-3 sm:px-6 py-3 transition-all overflow-x-hidden">
         <div className="max-w-7xl mx-auto flex flex-wrap sm:flex-nowrap items-center justify-between gap-3 sm:gap-4">
           
           <div className="flex items-center justify-between w-full sm:w-auto gap-2">
@@ -3149,6 +3427,7 @@ export default function App() {
         isOpen={isExcelImportOpen}
         onClose={() => setIsExcelImportOpen(false)} onBack={() => { setIsExcelImportOpen(false); setIsHelpModalOpen(true); }}
         onImportData={handleExcelImport}
+        carProfile={carProfile}
       />
 
       {isMultimodalAiOpen && (
@@ -3176,7 +3455,7 @@ export default function App() {
       )}
 
       {/* Main Container */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-8 pb-32">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-8 pb-32 sm:pb-36">
 
         {/* Sweep Notification Banner */}
         {sweepNotification && (
@@ -3275,7 +3554,22 @@ export default function App() {
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Bateria Rest.</th>
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">{carProfile.vehicleType === 'eletrico' ? 'Custo Bateria' : 'Custo Combustível'}</th>
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Diária Carro</th>
-                  <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Desp. Extras Carro</th>
+                  <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">
+                    <div className="flex items-center justify-end gap-1.5 group/th">
+                      <span>Desp. Extras Carro</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleClearMonthCarExpenses(selectedMonth, selectedYear);
+                        }}
+                        className="opacity-0 group-hover/th:opacity-100 p-1 text-zinc-500 hover:text-rose-400 hover:bg-zinc-800/80 rounded transition-all cursor-pointer"
+                        title={`Zerar / Limpar Despesas Extras Fantasma de ${MONTH_NAMES[selectedMonth - 1]}/${selectedYear}`}
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </th>
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Alimentação</th>
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Qtd 99</th>
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Lucro 99</th>
@@ -3288,8 +3582,8 @@ export default function App() {
                     <div>Anjo</div>
                     <div className="text-[8px] font-normal text-amber-500/70 lowercase">recebidos</div>
                   </th>
-                  <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Fat. Bruto</th>
-                  <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Resultado Líquido</th>
+                  <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800 text-blue-400">Fat. Bruto</th>
+                  <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800 text-emerald-400">Resultado Líquido</th>
                   <th className="py-3 px-3 text-center sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Ações</th>
                 </tr>
               </thead>
@@ -3338,7 +3632,7 @@ export default function App() {
                           <div className={`font-bold ${isHighlighted ? 'text-emerald-300' : 'text-zinc-100'}`}>
                             {log.date.split('-').reverse().slice(0, 2).join('/')}
                           </div>
-                          <div className={`text-[10px] ${isHighlighted ? 'text-emerald-400 font-semibold' : 'text-zinc-550'}`}>
+                          <div className={`text-[10px] ${isHighlighted ? 'text-blue-400 font-semibold' : 'text-zinc-550'}`}>
                             {WEEK_DAYS[new Date(log.date + 'T00:00:00').getDay()]}
                           </div>
                         </td>
@@ -3369,7 +3663,14 @@ export default function App() {
                         <td className="py-3 px-3 text-right font-mono text-zinc-400">
                           {formatBRL(log.diariaCarro)}
                         </td>
-                        <td className="py-3 px-3 text-right font-mono text-zinc-400">
+                        <td 
+                          className="py-3 px-3 text-right font-mono text-zinc-400"
+                          title={
+                            carExpensesSum > 0 
+                              ? `Detalhamento: Lava-jato: ${formatBRL(log.carExpenses?.wash || 0)} | Pedágio: ${formatBRL(log.carExpenses?.toll || 0)} | Estac.: ${formatBRL(log.carExpenses?.parking || 0)} | Recarga Ext.: ${formatBRL(log.carExpenses?.publicCharging || 0)} | Manutenção: ${formatBRL(log.carExpenses?.maintenance || 0)} | Outros: ${formatBRL(log.carExpenses?.other || 0)}`
+                              : 'Sem despesas extras de carro'
+                          }
+                        >
                           {formatBRL(carExpensesSum)}
                         </td>
                         <td className="py-3 px-3 text-right font-mono text-zinc-400">
@@ -3399,10 +3700,10 @@ export default function App() {
                         <td className="py-3 px-3 text-right font-mono text-amber-400 font-medium" title="Recebido (não soma no dia, conta no consolidado do mês)">
                           {anjo ? formatBRL(anjo) : '-'}
                         </td>
-                        <td className="py-3 px-3 text-right font-mono text-emerald-400 font-semibold">
+                        <td className="py-3 px-3 text-right font-mono text-blue-400 font-semibold">
                           {formatBRL(gross)}
                         </td>
-                        <td className={`py-3 px-3 text-right font-mono font-bold ${net >= 0 ? 'text-blue-400' : 'text-red-400'}`}>
+                        <td className={`py-3 px-3 text-right font-mono font-bold ${net >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                           {formatBRL(net)}
                         </td>
                         <td className="py-3 px-3 text-center min-w-[130px]">
@@ -3660,7 +3961,7 @@ export default function App() {
                           <div className="space-y-0.5 font-mono text-[11px]">
                             <div className="flex justify-between text-zinc-300">
                               <span className="text-zinc-500 text-[10px] font-sans">Faturamento:</span>
-                              <span className="font-bold text-emerald-400">{formatBRL(mGross)}</span>
+                              <span className="font-bold text-blue-400">{formatBRL(mGross)}</span>
                             </div>
                             <div className="flex justify-between text-zinc-300">
                               <span className="text-zinc-500 text-[10px] font-sans">Custos Ops:</span>
@@ -3668,7 +3969,7 @@ export default function App() {
                             </div>
                             <div className="flex justify-between border-t border-zinc-850 pt-1 text-[11px] font-bold">
                               <span className="text-zinc-400 text-[10px] font-sans">Lucro:</span>
-                              <span className={mNet >= 0 ? 'text-blue-400' : 'text-red-400'}>{formatBRL(mNet)}</span>
+                              <span className={mNet >= 0 ? 'text-emerald-400' : 'text-red-400'}>{formatBRL(mNet)}</span>
                             </div>
                           </div>
                         </div>
@@ -3695,9 +3996,6 @@ export default function App() {
                       {calendarDays.map((dayData) => {
                         const { day, dateStr, log, isSunday, isOff } = dayData;
                         let gross = log ? (log.appUber.earnings + log.appUber.bonus + log.app99.earnings + log.app99.bonus + log.appParticular.earnings + (log.recompensasExtra || 0)) : 0;
-  if (gross === 1.04 || gross === 1.05 || gross === 5.8) {
-      gross = 0;
-  }
                         const dayAnjo = log ? (log.anjo !== undefined ? log.anjo : (log.outrasFontes || 0)) : 0;
                         const carExpensesSum = log ? ((log.carExpenses?.wash || 0) + (log.carExpenses?.toll || 0) + (log.carExpenses?.maintenance || 0) + (log.carExpenses?.parking || 0) + (log.carExpenses?.other || 0)) : 0;
                         const foodExpensesSum = log ? ((log.foodExpenses?.lunch || 0) + (log.foodExpenses?.dinner || 0) + (log.foodExpenses?.snacks || 0) + (log.foodExpenses?.coffee || 0)) : 0;
@@ -3719,18 +4017,24 @@ export default function App() {
                           } else {
                             dayTextElement = <span className="text-amber-400/90 font-medium text-[9px] sm:text-[10px] uppercase">Folga</span>;
                           }
+                        } else if (!hasActivity) {
+                          // Dia sem atividade / sem lançamento ainda (neutro e discreto)
+                          dayCardStyle = "bg-zinc-950/50 border-zinc-850 hover:bg-zinc-900/60 hover:border-zinc-700/70 transition-all";
+                          dayDotColor = "";
+                          dayNumColor = "text-zinc-500 font-semibold";
+                          dayTextElement = <span className="text-zinc-600 font-mono font-medium text-[10px] sm:text-[11px]">0,00</span>;
                         } else {
-                          // Dia de Trabalho (Independente se é domingo ou não)
+                          // Dia de Trabalho com atividade lançada (Independente se é domingo ou não)
                           if (gross >= 500 || weekAvgPasses) {
-                            dayCardStyle = "bg-emerald-950/40 border-emerald-500/80 hover:bg-emerald-900/50 hover:border-emerald-400 shadow-sm shadow-emerald-500/10";
-                            dayDotColor = "bg-emerald-400";
-                            dayTextElement = <span className="text-emerald-400 font-black font-mono whitespace-nowrap">{formatBRL(gross).replace('R$', '').trim()}</span>;
-                            dayNumColor = "text-emerald-300";
+                            dayCardStyle = "bg-blue-950/40 border-blue-500/80 hover:bg-blue-900/50 hover:border-blue-400 shadow-sm shadow-blue-500/10";
+                            dayDotColor = "bg-blue-400";
+                            dayTextElement = <span className="text-blue-400 font-black font-mono whitespace-nowrap">{formatBRL(gross).replace('R$', '').trim()}</span>;
+                            dayNumColor = "text-blue-300 font-bold";
                           } else {
                             dayCardStyle = "bg-rose-950/40 border-rose-500/80 hover:bg-rose-900/50 hover:border-rose-400 shadow-sm shadow-rose-500/10";
                             dayDotColor = "bg-rose-400";
                             dayTextElement = <span className="text-rose-400 font-black font-mono whitespace-nowrap">{gross > 0 ? formatBRL(gross).replace('R$', '').trim() : '0,00'}</span>;
-                            dayNumColor = "text-rose-300";
+                            dayNumColor = "text-rose-300 font-bold";
                           }
                         }
                         const isHighlightedByAssistant = highlightedAssistantDates.has(dateStr);
@@ -3758,7 +4062,9 @@ export default function App() {
                                   </span>
                                 ) : dayDotColor ? (
                                   <span className={`w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full ${dayDotColor}`} />
-                                ) : null}
+                                ) : (
+                                  <span className="w-1.5 h-1.5 rounded-full bg-zinc-800/80" />
+                                )}
                               </div>
                             </div>
 
@@ -4311,7 +4617,7 @@ export default function App() {
                     </span>
                   )}
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                   <div className="space-y-1">
                     <label className="text-[10px] text-zinc-400 block uppercase font-bold">Nome da Conta / Despesa</label>
                     <input
@@ -4337,12 +4643,21 @@ export default function App() {
                     />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[10px] text-zinc-400 block uppercase font-bold">Parcelas / Vencimento (Opcional)</label>
+                    <label className="text-[10px] text-zinc-400 block uppercase font-bold">Parcelas (Ex: 09/12)</label>
                     <input
                       type="text"
-                      placeholder="Ex: 09/12 ou Vence dia 10"
+                      placeholder="Ex: 09/12"
                       value={newFixedInstallments}
                       onChange={e => setNewFixedInstallments(e.target.value)}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-2.5 text-xs font-semibold focus:outline-none focus:border-emerald-500 font-sans text-zinc-100"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-zinc-400 block uppercase font-bold">Data Início</label>
+                    <input
+                      type="month"
+                      value={newFixedStartDate}
+                      onChange={e => setNewFixedStartDate(e.target.value)}
                       className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-2.5 text-xs font-semibold focus:outline-none focus:border-emerald-500 font-sans text-zinc-100"
                     />
                   </div>
@@ -4611,9 +4926,9 @@ export default function App() {
                 </button>
                 {!isKpisSectionOpen && (
                   <div className="hidden sm:flex items-center gap-2 text-xs font-mono font-bold">
-                    <span className="text-emerald-400">{formatBRL(totalGrossEarnings)}</span>
+                    <span className="text-blue-400">{formatBRL(totalGrossEarnings)}</span>
                     <span className="text-zinc-600">|</span>
-                    <span className={realNetEarnings >= 0 ? 'text-blue-400' : 'text-red-400'}>{formatBRL(realNetEarnings)}</span>
+                    <span className={realNetEarnings >= 0 ? 'text-emerald-400' : 'text-red-400'}>{formatBRL(realNetEarnings)}</span>
                   </div>
                 )}
                 <div className="p-1.5 bg-zinc-800 rounded-lg text-zinc-400">
@@ -4632,13 +4947,13 @@ export default function App() {
                     <Coins className="w-5 h-5 text-emerald-400 shrink-0" />
                   </div>
                   <div>
-                    <h3 className="text-xl sm:text-2xl font-black text-emerald-400 tracking-tight font-mono truncate" title={formatBRL(totalGrossEarnings)}>
+                    <h3 className="text-xl sm:text-2xl font-black text-blue-400 tracking-tight font-mono truncate" title={formatBRL(totalGrossEarnings)}>
                       {formatBRL(totalGrossEarnings)}
                     </h3>
                     <div className="mt-2.5 pt-2 border-t border-zinc-850/60 space-y-1 text-[11px]">
                       <div className="flex justify-between items-center text-zinc-300 gap-2">
                         <span className="text-zinc-400 font-medium truncate">Trabalho + Recompensas:</span>
-                        <span className="font-mono font-bold text-emerald-400 shrink-0">{formatBRL(totalOperationalEarnings)}</span>
+                        <span className="font-mono font-bold text-blue-400 shrink-0">{formatBRL(totalOperationalEarnings)}</span>
                       </div>
                       <div className="flex justify-between items-center text-zinc-300 gap-2">
                         <span className="text-amber-400 font-semibold flex items-center gap-1 truncate">
@@ -4648,7 +4963,7 @@ export default function App() {
                       </div>
                       <div className="flex justify-between items-center text-[10px] text-zinc-500 pt-1 border-t border-zinc-850/40">
                         <span>{totalRides} Corridas</span>
-                        <span className="text-emerald-500 font-semibold">
+                        <span className="text-blue-500 font-semibold">
                           {totalRides > 0 ? formatBRL(totalOperationalEarnings / totalRides) + '/corr' : 'R$ 0,00'}
                         </span>
                       </div>
@@ -4694,7 +5009,7 @@ export default function App() {
                   <div className="space-y-2">
                     <div className="flex justify-between items-baseline gap-2">
                       <span className="text-[10px] text-zinc-500 font-bold uppercase shrink-0">Operacional:</span>
-                      <span className={`text-xs sm:text-sm font-bold font-mono truncate ${netOperational >= 0 ? 'text-blue-400' : 'text-red-400'}`}>
+                      <span className={`text-xs sm:text-sm font-bold font-mono truncate ${netOperational >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                         {formatBRL(netOperational)}
                       </span>
                     </div>
@@ -4794,7 +5109,7 @@ export default function App() {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
                 <div className="bg-zinc-950/60 p-3 sm:p-3.5 rounded-xl border border-zinc-850 min-w-0 overflow-hidden flex flex-col justify-between">
                   <span className="text-[10px] font-bold uppercase text-zinc-400 block truncate" title="Faturamento Bruto Est.">Faturamento Bruto Est.</span>
-                  <span className="text-sm xs:text-base sm:text-lg font-black font-mono text-emerald-400 block truncate tracking-tight my-0.5" title={formatBRL(currentMonthProj?.projGross || 0)}>
+                  <span className="text-sm xs:text-base sm:text-lg font-black font-mono text-blue-400 block truncate tracking-tight my-0.5" title={formatBRL(currentMonthProj?.projGross || 0)}>
                     {formatBRL(currentMonthProj?.projGross || 0)}
                   </span>
                   <span className="text-[10px] text-zinc-400 block truncate">
@@ -5154,45 +5469,41 @@ export default function App() {
 
       </main>
 
-      {/* Elegant Footer info */}
-      <footer className="border-t border-zinc-900 bg-zinc-950 py-10 mt-20 text-xs text-zinc-500 pb-28">
-        <div className="max-w-7xl mx-auto px-6 text-center space-y-3">
-          <div className="flex items-center justify-center gap-2.5 text-zinc-500 text-xs">
-            <button
-              type="button"
-              onClick={() => { setHelpActiveTab('geral'); setIsHelpModalOpen(true); }}
-              className="p-1 bg-white border border-zinc-700/80 rounded-lg shadow-sm hover:scale-105 transition-transform cursor-pointer"
-              title="GKD Mobility"
-            >
-              <GkdMobilityLogo size="xs" />
-            </button>
-            <button
-              type="button"
-              onClick={() => { setHelpActiveTab('geral'); setIsHelpModalOpen(true); }}
-              className="font-bold text-zinc-300 hover:text-emerald-400 transition-colors cursor-pointer"
-              title="Clique para ver Detalhes e Descrição do Aplicativo"
-            >
-              GKD Controle Diário
-            </button>
-            <span className="text-zinc-700">•</span>
-            <button
-              type="button"
-              onClick={() => { setHelpActiveTab('geral'); setIsHelpModalOpen(true); }}
-              className="text-[11px] font-mono text-zinc-500 hover:text-zinc-400 transition-colors cursor-pointer"
-              title="Versão do Aplicativo (Clique para detalhes)"
-            >
-              GKD_CD_V.2.0.0
-            </button>
-          </div>
-          <p className="max-w-xl mx-auto text-zinc-500 leading-relaxed">
-            Algoritmo inteligente integrado para {carProfile.vehicleType === 'eletrico' ? 'carros elétricos' : 'carros a combustão'}. Cálculos operacionais, persistência local 100% offline e interface otimizada para dispositivos móveis.
-          </p>
-        </div>
-      </footer>
+      {/* BOTÃO FLUTUANTE COMPACTO PARA REEXIBIR O RODAPÉ SE ELE FOI RECOLHIDO */}
+      {isBottomDockCollapsed && !isAddingFixed && !isInputActive && !isModalOpen && !isCarModalOpen && (
+        <button
+          type="button"
+          onClick={() => setIsBottomDockCollapsed(false)}
+          className="fixed bottom-4 right-4 z-40 bg-zinc-900/95 hover:bg-zinc-800 border border-emerald-500/50 text-zinc-200 hover:text-emerald-300 px-3.5 py-2 rounded-full text-xs font-bold shadow-2xl shadow-black flex items-center gap-2 backdrop-blur-md transition-all cursor-pointer animate-fadeIn"
+          title="Exibir barra de navegação"
+        >
+          <LayoutGrid className="w-3.5 h-3.5 text-emerald-400" />
+          <span>Menu</span>
+          <ChevronUp className="w-3.5 h-3.5 text-zinc-400" />
+        </button>
+      )}
 
       {/* MODERN BOTTOM NAVIGATION BAR DOCK */}
-      <nav id="bottom-dock-nav" className="fixed bottom-0 left-0 right-0 z-50 bg-[#090b10]/95 backdrop-blur-xl border-t border-zinc-800/90 shadow-[0_-15px_40px_rgba(0,0,0,0.9)] pb-[calc(env(safe-area-inset-bottom)+14px)] pt-3 px-2">
+      <nav 
+        id="bottom-dock-nav" 
+        className={`fixed bottom-0 left-0 right-0 z-40 bg-[#090b10]/95 backdrop-blur-xl border-t border-zinc-800/90 shadow-[0_-15px_40px_rgba(0,0,0,0.9)] pb-[calc(env(safe-area-inset-bottom)+14px)] pt-3 px-2 transition-all duration-300 ease-in-out ${
+          (isInputActive || isAddingFixed || isModalOpen || isCarModalOpen || isKpisModalOpen || isEfficiencyModalOpen || isAppShareModalOpen || isBackupModalOpen || isExcelImportOpen || isMultimodalAiOpen || isAssistantOpen || isDatePickerModalOpen || isHelpModalOpen || isBottomDockCollapsed)
+            ? 'translate-y-full opacity-0 pointer-events-none invisible' 
+            : 'translate-y-0 opacity-100 visible'
+        }`}
+      >
         <div className="max-w-lg mx-auto px-3 sm:px-4 py-2 flex items-center justify-between relative">
+          
+          {/* Botão discreto para recolher/esconder o rodapé */}
+          <button
+            type="button"
+            onClick={() => setIsBottomDockCollapsed(true)}
+            className="absolute -top-3.5 right-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-zinc-400 hover:text-zinc-200 px-2 py-0.5 rounded-full text-[10px] font-semibold flex items-center gap-1 shadow-lg shadow-black/60 transition-all cursor-pointer"
+            title="Esconder rodapé com botões"
+          >
+            <ChevronDown className="w-3 h-3 text-zinc-400" />
+            <span>Esconder</span>
+          </button>
           
           {/* 1. Contas */}
           <button
@@ -5569,6 +5880,109 @@ export default function App() {
                 );
               })()}
 
+              {/* Pop-up Modal de Estimativa de Bateria a partir do KM */}
+              {confirmBatteryEstimatePrompt && batteryEstimateInfo && (
+                <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center z-[110] p-4 pb-[calc(env(safe-area-inset-bottom)+24px)] animate-fadeIn">
+                  <div className="bg-[#0f131a] border border-emerald-500/40 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden flex flex-col p-5 sm:p-6 space-y-4 animate-scaleUp">
+                    
+                    {/* Header */}
+                    <div className="flex items-center justify-between border-b border-zinc-800 pb-3.5">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2.5 bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 rounded-xl shrink-0">
+                          <Zap className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-bold text-zinc-100">
+                            Estimativa de Bateria
+                          </h3>
+                          <p className="text-xs text-emerald-400 font-medium">Reencaixe automático pela rodagem</p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmBatteryEstimatePrompt(false);
+                          batteryEstimateDismissedRef.current = true;
+                        }}
+                        className="p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
+                        title="Fechar"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {/* Description & Calculation Metrics */}
+                    <div className="bg-zinc-900/80 border border-zinc-800 p-4 rounded-xl space-y-3">
+                      <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed">
+                        Como o campo <span className="font-bold text-zinc-100">Sobrou de Bateria (%)</span> não foi preenchido, a bateria restante e o custo foram reencaixados com base nos <span className="font-bold text-emerald-400">{batteryEstimateInfo.km} KM</span> rodados:
+                      </p>
+
+                      <div className="grid grid-cols-2 gap-2 pt-1">
+                        <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-800/80">
+                          <span className="text-[10px] text-zinc-500 block uppercase font-bold">Consumo Estimado</span>
+                          <span className="text-sm font-bold text-amber-400">
+                            {batteryEstimateInfo.consumedPercent}% <span className="text-[10px] text-zinc-400 font-normal">({batteryEstimateInfo.energyConsumedKwh} kWh)</span>
+                          </span>
+                        </div>
+
+                        <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-800/80">
+                          <span className="text-[10px] text-zinc-500 block uppercase font-bold">Bateria Restante</span>
+                          <span className="text-sm font-bold text-emerald-400">
+                            {batteryEstimateInfo.remainingPercent}%
+                          </span>
+                        </div>
+
+                        <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-800/80">
+                          <span className="text-[10px] text-zinc-500 block uppercase font-bold">Autonomia Média</span>
+                          <span className="text-sm font-bold text-zinc-200">
+                            {batteryEstimateInfo.autonomy} km
+                          </span>
+                        </div>
+
+                        <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-800/80">
+                          <span className="text-[10px] text-zinc-500 block uppercase font-bold">Custo Estimado</span>
+                          <span className="text-sm font-bold text-emerald-300 font-mono">
+                            R$ {batteryEstimateInfo.estimatedCost}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Action Buttons */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSobrouBateria(String(batteryEstimateInfo.remainingPercent));
+                          setCustoEnergia(batteryEstimateInfo.estimatedCost);
+                          setIsEnergyCostOverridden(false);
+                          setConfirmBatteryEstimatePrompt(false);
+                          batteryEstimateDismissedRef.current = true;
+                          setSweepNotification(`🔋 Bateria restante estimada em ${batteryEstimateInfo.remainingPercent}% aplicada!`);
+                          setTimeout(() => setSweepNotification(null), 4000);
+                        }}
+                        className="py-3 px-4 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black text-xs sm:text-sm rounded-xl transition-all cursor-pointer shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-1.5"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Aplicar {batteryEstimateInfo.remainingPercent}% Bateria</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmBatteryEstimatePrompt(false);
+                          batteryEstimateDismissedRef.current = true;
+                        }}
+                        className="py-3 px-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold text-xs sm:text-sm rounded-xl transition-all cursor-pointer text-center"
+                      >
+                        Digitar Manualmente
+                      </button>
+                    </div>
+
+                  </div>
+                </div>
+              )}
+
               {errorMessage && (
                 <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-xl text-xs flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 shrink-0" />
@@ -5733,7 +6147,19 @@ export default function App() {
 
                   <div className="grid grid-cols-3 gap-3">
                     <div className="space-y-1.5">
-                      <label className="text-[11px] text-zinc-500 block font-bold uppercase tracking-wider">{carProfile.vehicleType === 'eletrico' ? 'Sobrou de Bateria (%)' : 'Sobrou no Tanque (%)'}</label>
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] text-zinc-500 block font-bold uppercase tracking-wider">{carProfile.vehicleType === 'eletrico' ? 'Sobrou de Bateria (%)' : 'Sobrou no Tanque (%)'}</label>
+                        {parseInt(String(kmRodado), 10) > 0 && (!sobrouBateria || String(sobrouBateria).trim() === '') && (
+                          <button
+                            type="button"
+                            onClick={() => triggerBatteryEstimatePopup()}
+                            className="text-[9px] text-emerald-400 font-bold bg-emerald-500/10 hover:bg-emerald-500/20 px-1.5 py-0.5 rounded border border-emerald-500/30 transition-all inline-flex items-center gap-1 cursor-pointer"
+                            title="Calcular estimativa pelos KM rodados"
+                          >
+                            <Zap className="w-2.5 h-2.5" /> Estimar
+                          </button>
+                        )}
+                      </div>
                       <input
                         type="text"
                         inputMode="decimal"
@@ -5807,7 +6233,12 @@ export default function App() {
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1.5">
-                      <label className="text-[11px] text-zinc-500 block font-bold uppercase tracking-wider">KM Rodado</label>
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] text-zinc-500 block font-bold uppercase tracking-wider">KM Rodado</label>
+                        {parseInt(String(kmRodado), 10) > 0 && (!sobrouBateria || String(sobrouBateria).trim() === '') && (
+                          <span className="text-[9px] text-emerald-400 font-medium">Bateria auto-estimada</span>
+                        )}
+                      </div>
                       <input
                         type="text"
                         inputMode="numeric"
@@ -5819,10 +6250,14 @@ export default function App() {
                           setKmRodado(val);
                           setLastEditedEnergyField('km');
                           setIsEnergyCostOverridden(false);
+                          batteryEstimateDismissedRef.current = false;
                         }}
                         onBlur={() => {
                           const num = parseInt(String(kmRodado), 10) || 0;
-                          if (num > 0) setKmRodado(num.toString());
+                          if (num > 0) {
+                            setKmRodado(num.toString());
+                            triggerBatteryEstimatePopup(num);
+                          }
                         }}
                         className="w-full bg-[#0d0d0f] border border-zinc-800/50 rounded-xl text-sm py-3 px-4 font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 transition-all"
                       />
@@ -5911,7 +6346,7 @@ export default function App() {
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-mono font-bold text-pink-400">
-                        {formatBRL((parseFloat(wash) || 0) + (parseFloat(toll) || 0) + (parseFloat(maintenance) || 0) + (parseFloat(parking) || 0) + (parseFloat(carOther) || 0))}
+                        {formatBRL((parseFloat(wash) || 0) + (parseFloat(toll) || 0) + (parseFloat(maintenance) || 0) + (parseFloat(parking) || 0) + (parseFloat(publicCharging) || 0) + (parseFloat(carOther) || 0))}
                       </span>
                       {isCarExpensesOpen ? <ChevronUp className="w-4 h-4 text-zinc-400" /> : <ChevronDown className="w-4 h-4 text-zinc-400" />}
                     </div>
@@ -6381,7 +6816,7 @@ export default function App() {
                 <div className="flex flex-wrap items-center gap-3 text-xs font-mono">
                   <div className="bg-zinc-950/80 px-3 py-1.5 rounded-lg border border-zinc-800">
                     <span className="text-[10px] text-zinc-500 block uppercase font-sans font-bold">Bruto Est.</span>
-                    <span className="font-extrabold text-emerald-400">{formatBRL(currentMonthProj?.projGross || 0)}</span>
+                    <span className="font-extrabold text-blue-400">{formatBRL(currentMonthProj?.projGross || 0)}</span>
                   </div>
                   <div className="bg-zinc-950/80 px-3 py-1.5 rounded-lg border border-zinc-800">
                     <span className="text-[10px] text-zinc-500 block uppercase font-sans font-bold">Custos Est.</span>
@@ -6479,7 +6914,7 @@ export default function App() {
                       <tr className="bg-zinc-900/80 border-b border-zinc-800 text-zinc-400 font-mono text-[11px]">
                         <th className="py-2.5 px-3">Mês</th>
                         <th className="py-2.5 px-3 text-center">Status</th>
-                        <th className="py-2.5 px-3 text-right">Fat. Bruto</th>
+                        <th className="py-2.5 px-3 text-right text-blue-400">Fat. Bruto</th>
                         <th className="py-2.5 px-3 text-right">Custos Var.</th>
                         <th className="py-2.5 px-3 text-right">Desp. Fixas</th>
                         <th className="py-2.5 px-3 text-right font-bold text-emerald-400">Resultado Líquido</th>
@@ -6503,7 +6938,7 @@ export default function App() {
                               </span>
                             )}
                           </td>
-                          <td className="py-2 px-3 text-right text-zinc-200">{formatBRL(m.projGross)}</td>
+                          <td className="py-2 px-3 text-right text-blue-300">{formatBRL(m.projGross)}</td>
                           <td className="py-2 px-3 text-right text-red-400/90">-{formatBRL(m.projVarCosts)}</td>
                           <td className="py-2 px-3 text-right text-amber-400/90">-{formatBRL(m.projFixed)}</td>
                           <td className={`py-2 px-3 text-right font-bold ${m.projNet >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -6514,11 +6949,11 @@ export default function App() {
                     </tbody>
                     <tfoot className="bg-zinc-900 border-t-2 border-zinc-800 font-mono font-black text-xs text-zinc-100">
                       <tr>
-                        <td className="py-3 px-3 font-sans uppercase text-emerald-400" colSpan={2}>Total Fechamento do Ano</td>
-                        <td className="py-3 px-3 text-right text-emerald-400">{formatBRL(projectionData.projectedGrossTotal)}</td>
+                        <td className="py-3 px-3 font-sans uppercase text-blue-400" colSpan={2}>Total Fechamento do Ano</td>
+                        <td className="py-3 px-3 text-right text-blue-400">{formatBRL(projectionData.projectedGrossTotal)}</td>
                         <td className="py-3 px-3 text-right text-red-400">-{formatBRL(projectionData.projectedVarCostsTotal)}</td>
                         <td className="py-3 px-3 text-right text-amber-400">-{formatBRL(projectionData.projectedFixedTotal)}</td>
-                        <td className="py-3 px-3 text-right text-emerald-300 text-sm">{formatBRL(projectionData.projectedNetTotal)}</td>
+                        <td className="py-3 px-3 text-right text-emerald-400 text-sm">{formatBRL(projectionData.projectedNetTotal)}</td>
                       </tr>
                     </tfoot>
                   </table>
@@ -7899,7 +8334,7 @@ export default function App() {
                   <Coins className="w-5 h-5 text-emerald-400" />
                 </div>
                 <div>
-                  <h3 className="text-2xl font-black text-emerald-400 tracking-tight font-mono">{formatBRL(totalGrossEarnings)}</h3>
+                  <h3 className="text-2xl font-black text-blue-400 tracking-tight font-mono">{formatBRL(totalGrossEarnings)}</h3>
                   <div className="mt-2.5 pt-2 border-t border-zinc-850/60 space-y-1 text-[11px]">
                     <div className="flex justify-between text-zinc-300">
                       <span className="text-zinc-400">Trabalho + Recompensas:</span>
@@ -8152,7 +8587,7 @@ export default function App() {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="bg-zinc-900/80 border border-zinc-800 p-3 rounded-xl space-y-1">
                   <span className="text-[10px] uppercase font-bold text-zinc-400">Soma Total</span>
-                  <p className="text-base font-black text-emerald-400 font-mono">{formatBRL(selectedWeekModalData.totalGross)}</p>
+                  <p className="text-base font-black text-blue-400 font-mono">{formatBRL(selectedWeekModalData.totalGross)}</p>
                 </div>
                 <div className="bg-zinc-900/80 border border-zinc-800 p-3 rounded-xl space-y-1">
                   <span className="text-[10px] uppercase font-bold text-zinc-400">Dias Trabalhados</span>
@@ -8527,6 +8962,7 @@ export default function App() {
         onClose={() => setIsDeepSweepModalOpen(false)} onBack={() => { setIsDeepSweepModalOpen(false); setIsHelpModalOpen(true); }}
         report={deepSweepReport}
         onRerun={handleDeepSweep}
+        onClearCarExpenses={() => handleClearMonthCarExpenses(selectedMonth, selectedYear)}
       />
 
       {/* MODAL DE CONFIRMAÇÃO PARA APAGAR TODOS OS DADOS DA PLANILHA */}

@@ -1,0 +1,3 @@
+const fs = require('fs');
+// This is frontend, I don't have access to the live db through this script if it's in localStorage...
+// Ah, the user uploaded an image. I can't read their localStorage.
