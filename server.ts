@@ -109,7 +109,7 @@ Retorne estritamente um objeto JSON válido (sem markdown extra, sem blocos de c
     parts.push({ text: promptText });
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
+      model: "gemini-3.7-flash",
       contents: { parts },
     });
 
@@ -295,7 +295,7 @@ Retorne estritamente um objeto JSON válido (sem tags markdown, sem explicaçõe
     parts.push({ text: systemPrompt });
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.1-pro-preview",
+      model: "gemini-3.7-flash",
       contents: parts,
     });
 

@@ -182,12 +182,7 @@ export async function normalizeAndCompressImage(blob: Blob, maxDim = 1600, quali
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
-      // Se a imagem falhar ao carregar no <img> (como HEIC não convertido), não podemos enviar cru.
-      if (blob.type.includes('heic') || blob.type.includes('heif')) {
-        reject(new Error("Formato de imagem HEIC não suportado nativamente pelo navegador. Use JPG ou PNG."));
-      } else {
-        blobToBase64(blob).then((b64) => resolve({ base64Data: b64, blob }));
-      }
+      reject(new Error("Formato de imagem não suportado ou arquivo corrompido. Por favor, use JPEG ou PNG nativos."));
     };
     img.src = url;
   });
@@ -224,24 +219,40 @@ export async function captureNativeCameraPhoto(): Promise<ProcessedFile | null> 
       source: CameraSource.Camera,
       width: 1600,
     });
-
     if (image.base64String) {
-      const mimeType = 'image/jpeg';
+      const format = (image.format || 'jpeg').toLowerCase();
+      const mimeType = format === 'png' ? 'image/png' : (format === 'heic' ? 'image/heic' : 'image/jpeg');
       const cleanB64 = image.base64String.replace(/^data:[^;]+;base64,/, '');
-      const base64Data = `data:image/jpeg;base64,${cleanB64}`;
-      return {
-        id: `${Date.now()}_cam`,
-        name: `Foto_Camera_${new Date().toLocaleTimeString('pt-BR').replace(/:/g, '-')}.jpeg`,
-        type: 'image',
-        mimeType,
-        size: Math.round((cleanB64.length * 3) / 4),
-        previewUrl: base64Data,
-        base64Data,
-      };
+      
+      // Conversão robusta de Base64 para Blob
+      const byteCharacters = atob(cleanB64);
+      const byteArrays = [];
+      for (let offset = 0; offset < byteCharacters.length; offset += 512) {
+        const slice = byteCharacters.slice(offset, offset + 512);
+        const byteNumbers = new Array(slice.length);
+        for (let i = 0; i < slice.length; i++) {
+          byteNumbers[i] = slice.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        byteArrays.push(byteArray);
+      }
+      const blob = new Blob(byteArrays, { type: mimeType });
+      
+      const fileName = `Foto_Camera_${new Date().toLocaleTimeString('pt-BR').replace(/:/g, '-')}.${format}`;
+      const file = new File([blob], fileName, { type: mimeType });
+      return await processInputFile(file);
     }
   } catch (err: any) {
-    // If user cancelled or running in plain browser, fallback to standard input
-    console.log('Capacitor camera bypassed or cancelled:', err?.message);
+    if (err.message && err.message.includes("cancelled")) {
+      console.log('Capacitor camera bypassed or cancelled:', err?.message);
+    } else if (err.message && err.message.includes("bypassed")) {
+      console.log('Capacitor camera bypassed or cancelled:', err?.message);
+    } else if (err.message && err.message.includes("User cancelled")) {
+      console.log('Capacitor camera bypassed or cancelled:', err?.message);
+    } else {
+      if (err.message) throw err;
+      throw new Error("Erro na captura de imagem: " + String(err));
+    }
   }
   return null;
 }
