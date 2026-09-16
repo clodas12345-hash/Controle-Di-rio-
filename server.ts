@@ -64,8 +64,16 @@ app.post("/api/parse-voice", async (req, res) => {
       return res.status(400).json({ error: "GEMINI_API_KEY não configurada no servidor." });
     }
 
-    const ai = new GoogleGenAI({ apiKey });
-    const prompt = `Você é um assistente especializado em extrair dados de registros de motorista de aplicativo (Uber, 99, Particular, KM rodados, bateria restante %, custos de energia, despesas de carro e alimentação).
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
+
+    const promptText = `Você é um assistente especializado em extrair dados de registros de motorista de aplicativo (Uber, 99, Particular, KM rodados, bateria restante %, custos de energia, despesas de carro e alimentação).
 Contexto atual: Data padrão ${activeContext?.defaultDate || new Date().toISOString().slice(0, 10)}, Veículo: ${carProfile?.modelName || 'Elétrico'}.
 Texto do usuário: "${text || ''}"
 
@@ -85,20 +93,23 @@ Retorne estritamente um objeto JSON válido (sem markdown extra, sem blocos de c
   "foodExpenses": { "lunch": 0, "dinner": 0, "snacks": 0, "coffee": 0 }
 }`;
 
-    const contents: any[] = [prompt];
+    const parts: any[] = [];
     if (audioBase64) {
-      const base64Data = audioBase64.includes(",") ? audioBase64.split(",")[1] : audioBase64;
-      contents.push({
+      let cleanAudioB64 = audioBase64.includes(",") ? audioBase64.split(",")[1] : audioBase64;
+      cleanAudioB64 = cleanAudioB64.replace(/[^A-Za-z0-9+/=]/g, '');
+      while (cleanAudioB64.length % 4 !== 0) cleanAudioB64 += '=';
+      parts.push({
         inlineData: {
-          data: base64Data,
+          data: cleanAudioB64,
           mimeType: mimeType || "audio/webm"
         }
       });
     }
+    parts.push({ text: promptText });
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents,
+      model: "gemini-3.8-flash",
+      contents: { parts },
     });
 
     const rawText = response.text || "{}";
@@ -123,7 +134,14 @@ app.post(["/api/extract-receipt", "/api/analyze-receipt", "/api/parse-receipt", 
       return res.status(400).json({ error: "GEMINI_API_KEY não configurada no servidor." });
     }
 
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
     const systemPrompt = `Você é o assistente inteligente oficial do GKD Controle Diário, especializado na leitura e extração rigorosa de dados operacionais e financeiros para motoristas de aplicativo.
 
 DIRETRIZES E REGRAS DE EXTRAÇÃO:
@@ -172,8 +190,6 @@ Retorne estritamente um objeto JSON válido (sem tags markdown, sem explicaçõe
   }]
 }`;
 
-    const contents: any[] = [systemPrompt];
-
     // Collect unique images from payload
     const rawImages: { base64: string; mimeType: string }[] = [];
     const seenBase64 = new Set<string>();
@@ -183,17 +199,19 @@ Retorne estritamente um objeto JSON válido (sem tags markdown, sem explicaçõe
       let cleanMime = mime || 'image/jpeg';
       let cleanB64 = b64Str.trim();
 
-      if (cleanB64.startsWith('data:')) {
-        const match = cleanB64.match(/^data:([^;]+);base64,(.+)$/s);
-        if (match) {
-          cleanMime = match[1];
-          cleanB64 = match[2].trim();
-        } else {
-          const parts = cleanB64.split(',');
-          if (parts.length > 1) {
-            cleanB64 = parts[1].trim();
-          }
-        }
+      if (cleanB64.includes(';base64,')) {
+        const parts = cleanB64.split(';base64,');
+        const mimePart = parts[0].replace(/^data:/, '');
+        if (mimePart) cleanMime = mimePart;
+        cleanB64 = parts[1];
+      } else if (cleanB64.includes(',')) {
+        cleanB64 = cleanB64.split(',')[1];
+      }
+
+      // Sanitize base64 string strictly to valid Base64 characters
+      cleanB64 = cleanB64.replace(/[^A-Za-z0-9+/=]/g, '');
+      while (cleanB64.length % 4 !== 0) {
+        cleanB64 += '=';
       }
 
       // Standardize mimeType strictly for Gemini API (never allow image/jpg)
@@ -230,18 +248,20 @@ Retorne estritamente um objeto JSON válido (sem tags markdown, sem explicaçõe
       addImage(image || imageBase64);
     }
 
+    const parts: any[] = [];
     for (const item of rawImages) {
-      contents.push({
+      parts.push({
         inlineData: {
-          data: item.base64,
           mimeType: item.mimeType,
+          data: item.base64,
         }
       });
     }
+    parts.push({ text: systemPrompt });
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents,
+      model: "gemini-3.8-flash",
+      contents: { parts },
     });
 
     const rawText = response.text || "{}";
