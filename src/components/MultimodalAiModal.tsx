@@ -30,6 +30,7 @@ import {
   speakFeedback, 
   detectCellConflicts 
 } from '../lib/multimodalHelper';
+import { fetchApi } from '../lib/api';
 import { ConflictData } from './ConflictResolverModal';
 
 interface MultimodalAiModalProps {
@@ -343,7 +344,7 @@ export const MultimodalAiModal: React.FC<MultimodalAiModalProps> = ({
           });
         }
 
-        const res = await fetch('/api/parse-voice', {
+        const res = await fetchApi('/api/parse-voice', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -388,7 +389,7 @@ export const MultimodalAiModal: React.FC<MultimodalAiModalProps> = ({
           }
         }
 
-        const res = await fetch('/api/extract-receipt', {
+        const res = await fetchApi('/api/extract-receipt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

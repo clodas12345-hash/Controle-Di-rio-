@@ -18,6 +18,8 @@ import {
   Upload,
   ArrowRight
 } from 'lucide-react';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
 import { GkdMobilityLogo } from './GkdMobilityLogo';
 import { getApiUrl, isMobileOrNativeApp } from '../lib/api';
 
@@ -457,7 +459,9 @@ export function BackupModal({
   };
   const hasData = filteredLogs.length > 0 || relevantFixedExpenses.length > 0;
 
-  // Download compatível com APK Android e navegadores
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // Download e salvamento compatível com APK Android nativo e navegadores
   const handleDownload = async () => {
     if (!hasData) {
       alert("Nenhum lançamento ou despesa fixa encontrado para o período selecionado.");
@@ -467,8 +471,48 @@ export function BackupModal({
     const fileName = getExportFileName(extension);
     const isMobile = isMobileOrNativeApp();
 
-    // 1. Se estiver no celular/APK e o navegador suportar Web Share API com arquivos,
-    // usa o compartilhamento nativo do Android que permite salvar direto em "Arquivos", "Drive", "Downloads" ou "WhatsApp"
+    // 1. Tentar Capacitor Filesystem e Compartilhamento Nativo do Android (APK)
+    try {
+      const isCapacitor = Boolean(
+        (window as any).Capacitor?.isNativePlatform?.() || 
+        (window as any).Capacitor?.isPluginAvailable?.('Filesystem')
+      );
+
+      if (isCapacitor) {
+        // Grava no diretório de Documentos do dispositivo Android
+        const writeResult = await Filesystem.writeFile({
+          path: fileName,
+          data: content,
+          directory: Directory.Documents,
+          encoding: Encoding.UTF8,
+          recursive: true,
+        });
+
+        // Abre a folha nativa do Android para salvar no Drive, Arquivos ou WhatsApp
+        if (writeResult.uri) {
+          try {
+            await Share.share({
+              title: fileName,
+              text: `Backup do Controle Diário (${filteredLogs.length} dias)`,
+              url: writeResult.uri,
+              dialogTitle: 'Salvar ou Compartilhar Backup',
+            });
+          } catch (_) {}
+        }
+
+        setDownloadSuccess(true);
+        setSuccessMessage('Arquivo salvo com sucesso em Documentos/Downloads!');
+        setTimeout(() => {
+          setDownloadSuccess(false);
+          setSuccessMessage(null);
+        }, 4500);
+        return;
+      }
+    } catch (capErr) {
+      console.warn('[BackupModal] Fallback de Capacitor Filesystem:', capErr);
+    }
+
+    // 2. Se estiver no celular/navegador mobile com suporte a Web Share com arquivos
     if (isMobile && typeof navigator !== 'undefined' && (navigator as any).canShare) {
       try {
         const file = new File([content], fileName, { type: type || 'text/csv' });
@@ -479,35 +523,21 @@ export function BackupModal({
             text: 'Backup do GKD Controle Diário'
           });
           setDownloadSuccess(true);
-          setTimeout(() => setDownloadSuccess(false), 4000);
+          setSuccessMessage('Backup compartilhado/salvo!');
+          setTimeout(() => {
+            setDownloadSuccess(false);
+            setSuccessMessage(null);
+          }, 4000);
           return;
         }
       } catch (shareErr: any) {
         if (shareErr && shareErr.name === 'AbortError') {
-          return; // Usuário apenas fechou a janela de compartilhamento nativa
+          return;
         }
       }
     }
 
-    // 2. Download via Data URI Base64 (Funciona na maioria das WebViews Android sem precisar de requisições de rede)
-    try {
-      const base64 = btoa(unescape(encodeURIComponent(content)));
-      const dataUri = `data:${type || 'text/csv'};base64,${base64}`;
-      const link = document.createElement('a');
-      link.href = dataUri;
-      link.download = fileName;
-      link.style.display = 'none';
-      document.body.appendChild(link);
-      link.click();
-      setTimeout(() => {
-        try { document.body.removeChild(link); } catch (_) {}
-      }, 500);
-      setDownloadSuccess(true);
-      setTimeout(() => setDownloadSuccess(false), 3000);
-      return;
-    } catch (_) {}
-
-    // 3. Fallback: Blob URL padrão
+    // 3. Download padrão do Navegador (Blob URL / <a download>)
     try {
       const blob = new Blob([content], { type });
       const url = URL.createObjectURL(blob);
@@ -524,59 +554,16 @@ export function BackupModal({
         } catch (_) {}
       }, 1000);
       setDownloadSuccess(true);
-      setTimeout(() => setDownloadSuccess(false), 3000);
+      setSuccessMessage('Download iniciado!');
+      setTimeout(() => {
+        setDownloadSuccess(false);
+        setSuccessMessage(null);
+      }, 3000);
       return;
     } catch (_) {}
 
-    // 4. Fallback: Formulário POST via iframe invisível com URL absoluta para alcançar o servidor Cloud Run
-    try {
-      const exportUrl = getApiUrl('/api/export-backup');
-      const iframeName = 'hidden_backup_iframe_' + Date.now();
-      const iframe = document.createElement('iframe');
-      iframe.name = iframeName;
-      iframe.style.display = 'none';
-      document.body.appendChild(iframe);
-
-      const form = document.createElement('form');
-      form.method = 'POST';
-      form.action = exportUrl;
-      form.target = iframeName;
-      form.style.display = 'none';
-
-      const inputContent = document.createElement('input');
-      inputContent.type = 'hidden';
-      inputContent.name = 'content';
-      inputContent.value = content;
-      form.appendChild(inputContent);
-
-      const inputFileName = document.createElement('input');
-      inputFileName.type = 'hidden';
-      inputFileName.name = 'fileName';
-      inputFileName.value = fileName;
-      form.appendChild(inputFileName);
-
-      const inputMime = document.createElement('input');
-      inputMime.type = 'hidden';
-      inputMime.name = 'mimeType';
-      inputMime.value = type;
-      form.appendChild(inputMime);
-
-      document.body.appendChild(form);
-      form.submit();
-
-      setTimeout(() => {
-        try {
-          document.body.removeChild(form);
-          document.body.removeChild(iframe);
-        } catch (_) {}
-      }, 3000);
-
-      setDownloadSuccess(true);
-      setTimeout(() => setDownloadSuccess(false), 3000);
-      return;
-    } catch (_) {
-      handleCopyText();
-    }
+    // 4. Fallback final: Copiar para área de transferência
+    handleCopyText();
   };
 
   // Copiar para área de transferência
@@ -595,7 +582,11 @@ export function BackupModal({
         document.body.removeChild(textarea);
       }
       setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
+      setSuccessMessage('Conteúdo copiado para a área de transferência!');
+      setTimeout(() => {
+        setCopied(false);
+        setSuccessMessage(null);
+      }, 3000);
     } catch (_) {}
   };
 
@@ -1017,66 +1008,59 @@ export function BackupModal({
             </div>
           </div>
 
-          {/* Botões de Ação */}
-          <div className="space-y-2 pt-1">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              
-              {/* 1. Enviar no WhatsApp Direto */}
-              <button
-                type="button"
-                onClick={handleOpenWhatsApp}
-                disabled={!hasData}
-                className="p-3 bg-[#25D366] hover:bg-[#20bd5a] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2.5 shadow-lg shadow-emerald-950/40 active:scale-95 cursor-pointer"
-              >
-                <MessageCircle className="w-5 h-5 fill-white shrink-0" />
-                <span className="text-sm font-bold">Enviar no WhatsApp</span>
-              </button>
+          {/* Feedback Toast / Status */}
+          {successMessage && (
+            <div className="p-3 bg-emerald-950/80 border border-emerald-500/60 rounded-xl flex items-center gap-2.5 text-xs text-emerald-200 font-semibold animate-fade-in shadow-lg">
+              <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>{successMessage}</span>
+            </div>
+          )}
 
-              {/* 2. Baixar Arquivo Real na Pasta Downloads */}
+          {/* Botões de Ação Principais */}
+          <div className="space-y-2.5 pt-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              
+              {/* 1. Salvar Arquivo de Backup (.csv / .json) */}
               <button
                 type="button"
                 onClick={handleDownload}
                 disabled={!hasData}
-                className="p-3 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl transition-all flex flex-col items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-lg shadow-emerald-950/40"
+                className="p-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2.5 active:scale-95 cursor-pointer shadow-lg shadow-emerald-950/50"
               >
-                {downloadSuccess ? <Check className="w-4 h-4 text-emerald-300" /> : <Download className="w-4 h-4 text-emerald-300" />}
-                <span>{downloadSuccess ? 'Download Iniciado!' : `Salvar .${format === 'excel' ? 'csv' : 'json'} no Celular`}</span>
-                <span className="text-[9px] font-normal text-emerald-200">Salva na pasta Downloads</span>
+                {downloadSuccess ? <Check className="w-5 h-5 text-white" /> : <Download className="w-5 h-5 text-white" />}
+                <div className="text-left">
+                  <span className="text-sm font-bold block">{downloadSuccess ? 'Salvo com Sucesso!' : `Salvar .${format === 'excel' ? 'csv' : 'json'} no Celular`}</span>
+                  <span className="text-[10px] font-normal text-emerald-100">Downloads, Documentos ou Drive</span>
+                </div>
+              </button>
+
+              {/* 2. Enviar no WhatsApp Direto */}
+              <button
+                type="button"
+                onClick={handleOpenWhatsApp}
+                disabled={!hasData}
+                className="p-3.5 bg-[#25D366] hover:bg-[#20bd5a] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2.5 shadow-lg shadow-emerald-950/40 active:scale-95 cursor-pointer"
+              >
+                <MessageCircle className="w-5 h-5 fill-white shrink-0" />
+                <div className="text-left">
+                  <span className="text-sm font-bold block">Enviar no WhatsApp</span>
+                  <span className="text-[10px] font-normal text-white/90">Resumo completo formatado</span>
+                </div>
               </button>
             </div>
 
-            {/* Ações Secundárias */}
-            <div className="grid grid-cols-2 gap-2 pt-1">
-              <button
-                type="button"
-                onClick={handleShare}
-                disabled={!hasData}
-                className="py-2.5 px-3 bg-zinc-900/80 hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed border border-emerald-800/40 text-emerald-300 text-xs font-semibold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
-                title="Compartilhar ou salvar no Drive, Arquivos ou WhatsApp"
-              >
-                <Share2 className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Salvar / Compartilhar (APK)</span>
-              </button>
-
+            {/* Ação Auxiliar Rápida: Copiar Texto */}
+            <div className="flex justify-center pt-1">
               <button
                 type="button"
                 onClick={handleCopyText}
                 disabled={!hasData}
-                className="py-2.5 px-3 bg-zinc-900/80 hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed border border-zinc-800 text-zinc-300 text-xs font-medium rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                className="py-2 px-4 bg-zinc-900/80 hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed border border-zinc-800 text-zinc-300 text-xs font-medium rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-colors"
               >
                 {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-zinc-400" />}
-                <span>{copied ? 'Copiado!' : 'Copiar Texto'}</span>
+                <span>{copied ? 'Conteúdo Copiado!' : 'Copiar Texto para Área de Transferência'}</span>
               </button>
             </div>
-          </div>
-
-          <div className="p-2.5 bg-zinc-900/30 border border-zinc-800/60 rounded-xl">
-            <p className="text-[11px] text-zinc-400 leading-relaxed flex items-center gap-1.5">
-              <AlertCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              <span>
-                <strong>Dica para Celular/APK:</strong> Se o download automático não for concluído pelo app, toque em <strong>Salvar / Compartilhar (APK)</strong> para salvar diretamente no Google Drive, WhatsApp ou Gerenciador de Arquivos do Android.
-              </span>
-            </p>
           </div>
 
         </div>
