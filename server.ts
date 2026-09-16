@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import { GoogleGenAI } from "@google/genai";
+import heicConvert from "heic-convert";
 
 process.on("uncaughtException", (err) => {
   console.error("[server] Uncaught Exception:", err);
@@ -247,6 +248,39 @@ Retorne estritamente um objeto JSON válido (sem tags markdown, sem explicaçõe
       }
     } else if (image || imageBase64) {
       addImage(image || imageBase64);
+    }
+
+    // Convert any HEIC/HEIF images to JPEG before sending to Gemini,
+    // since the API frequently rejects real HEIC bytes even with a valid mimeType.
+    const detectFormat = (buf: Buffer): 'HEIC1' | 'HEIC2' | null => {
+      // HEIC files are ISO-BMFF containers; check the "ftyp" box brand.
+      if (buf.length < 12) return null;
+      const brand = buf.toString('ascii', 8, 12);
+      if (['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1'].includes(brand)) return 'HEIC1';
+      return null;
+    };
+
+    for (const item of rawImages) {
+      const isHeicMime = item.mimeType === 'image/heic' || item.mimeType === 'image/heif';
+      let buffer = Buffer.from(item.base64, 'base64');
+      const looksHeic = isHeicMime || detectFormat(buffer) !== null;
+
+      if (looksHeic) {
+        try {
+          const outputBuffer = (await heicConvert({
+            buffer,
+            format: 'JPEG',
+            quality: 0.9,
+          })) as Buffer;
+          item.base64 = outputBuffer.toString('base64');
+          item.mimeType = 'image/jpeg';
+        } catch (convErr) {
+          console.error('[server] HEIC conversion failed, sending original bytes:', convErr);
+          // Fall back to declaring it as jpeg anyway; Gemini may still reject it,
+          // but this avoids silently dropping the image.
+          item.mimeType = 'image/jpeg';
+        }
+      }
     }
 
     const parts: any[] = [];
