@@ -106,7 +106,8 @@ export async function processInputFile(file: File): Promise<ProcessedFile> {
   // 5. Image (HEIC / PNG / JPG / WEBP, etc.)
   let processedBlob: Blob = file;
 
-  if (fileExt === 'heic' || fileExt === 'heif' || file.type.includes('heic')) {
+  // Forçar conversão de HEIC/HEIF para JPEG
+  if (fileExt === 'heic' || fileExt === 'heif' || file.type.includes('heic') || file.type.includes('heif')) {
     try {
       const conversionResult = await heic2any({
         blob: file,
@@ -116,22 +117,27 @@ export async function processInputFile(file: File): Promise<ProcessedFile> {
       processedBlob = Array.isArray(conversionResult) ? conversionResult[0] : conversionResult;
     } catch (e) {
       console.warn('Erro na conversão HEIC:', e);
+      throw new Error("Não foi possível converter a imagem HEIC do iPhone. Por favor, tire um 'print' da foto ou converta para JPG/PNG.");
     }
   }
 
   // Compress & Normalize to clean JPEG (max 1600px)
-  const { base64Data: normalizedBase64, blob: finalBlob } = await normalizeAndCompressImage(processedBlob);
-  const previewUrl = URL.createObjectURL(finalBlob);
+  try {
+    const { base64Data: normalizedBase64, blob: finalBlob } = await normalizeAndCompressImage(processedBlob);
+    const previewUrl = URL.createObjectURL(finalBlob);
 
-  return {
-    id: fileId,
-    name: file.name,
-    type: 'image',
-    mimeType: 'image/jpeg',
-    size: finalBlob.size,
-    previewUrl,
-    base64Data: normalizedBase64,
-  };
+    return {
+      id: fileId,
+      name: file.name,
+      type: 'image',
+      mimeType: 'image/jpeg',
+      size: finalBlob.size,
+      previewUrl,
+      base64Data: normalizedBase64,
+    };
+  } catch (err: any) {
+    throw new Error(err.message || "Erro ao processar imagem para envio.");
+  }
 }
 
 /**
@@ -139,7 +145,7 @@ export async function processInputFile(file: File): Promise<ProcessedFile> {
  * to ensure fast upload and 100% compatibility with Gemini Vision.
  */
 export async function normalizeAndCompressImage(blob: Blob, maxDim = 1600, quality = 0.85): Promise<{ base64Data: string; blob: Blob }> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(blob);
     img.onload = () => {
@@ -171,12 +177,17 @@ export async function normalizeAndCompressImage(blob: Blob, maxDim = 1600, quali
         }, 'image/jpeg', quality);
         return;
       }
-      // fallback
+      // fallback for canvas failure on valid images
       blobToBase64(blob).then((b64) => resolve({ base64Data: b64, blob }));
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
-      blobToBase64(blob).then((b64) => resolve({ base64Data: b64, blob }));
+      // Se a imagem falhar ao carregar no <img> (como HEIC não convertido), não podemos enviar cru.
+      if (blob.type.includes('heic') || blob.type.includes('heif')) {
+        reject(new Error("Formato de imagem HEIC não suportado nativamente pelo navegador. Use JPG ou PNG."));
+      } else {
+        blobToBase64(blob).then((b64) => resolve({ base64Data: b64, blob }));
+      }
     };
     img.src = url;
   });
