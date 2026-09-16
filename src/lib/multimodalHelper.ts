@@ -105,7 +105,6 @@ export async function processInputFile(file: File): Promise<ProcessedFile> {
 
   // 5. Image (HEIC / PNG / JPG / WEBP, etc.)
   let processedBlob: Blob = file;
-  let targetMime = file.type || 'image/jpeg';
 
   if (fileExt === 'heic' || fileExt === 'heif' || file.type.includes('heic')) {
     try {
@@ -115,24 +114,72 @@ export async function processInputFile(file: File): Promise<ProcessedFile> {
         quality: 0.85,
       });
       processedBlob = Array.isArray(conversionResult) ? conversionResult[0] : conversionResult;
-      targetMime = 'image/jpeg';
     } catch (e) {
       console.warn('Erro na conversão HEIC:', e);
     }
   }
 
-  const base64 = await blobToBase64(processedBlob);
-  const previewUrl = URL.createObjectURL(processedBlob);
+  // Compress & Normalize to clean JPEG (max 1600px)
+  const { base64Data: normalizedBase64, blob: finalBlob } = await normalizeAndCompressImage(processedBlob);
+  const previewUrl = URL.createObjectURL(finalBlob);
 
   return {
     id: fileId,
     name: file.name,
     type: 'image',
-    mimeType: targetMime,
-    size: processedBlob.size,
+    mimeType: 'image/jpeg',
+    size: finalBlob.size,
     previewUrl,
-    base64Data: base64,
+    base64Data: normalizedBase64,
   };
+}
+
+/**
+ * Normalizes and compresses any image to standard JPEG (max 1600px, 0.85 quality)
+ * to ensure fast upload and 100% compatibility with Gemini Vision.
+ */
+export async function normalizeAndCompressImage(blob: Blob, maxDim = 1600, quality = 0.85): Promise<{ base64Data: string; blob: Blob }> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        if (width > height) {
+          height = Math.round((height * maxDim) / width);
+          width = maxDim;
+        } else {
+          width = Math.round((width * maxDim) / height);
+          height = maxDim;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+        canvas.toBlob((outBlob) => {
+          resolve({
+            base64Data: dataUrl,
+            blob: outBlob || blob
+          });
+        }, 'image/jpeg', quality);
+        return;
+      }
+      // fallback
+      blobToBase64(blob).then((b64) => resolve({ base64Data: b64, blob }));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      blobToBase64(blob).then((b64) => resolve({ base64Data: b64, blob }));
+    };
+    img.src = url;
+  });
 }
 
 export function fileToBase64(file: File): Promise<string> {
@@ -160,21 +207,23 @@ export function blobToBase64(blob: Blob): Promise<string> {
 export async function captureNativeCameraPhoto(): Promise<ProcessedFile | null> {
   try {
     const image = await Camera.getPhoto({
-      quality: 90,
+      quality: 85,
       allowEditing: false,
       resultType: CameraResultType.Base64,
       source: CameraSource.Camera,
+      width: 1600,
     });
 
     if (image.base64String) {
-      const mimeType = image.format ? `image/${image.format}` : 'image/jpeg';
-      const base64Data = `data:${mimeType};base64,${image.base64String}`;
+      const mimeType = 'image/jpeg';
+      const cleanB64 = image.base64String.replace(/^data:[^;]+;base64,/, '');
+      const base64Data = `data:image/jpeg;base64,${cleanB64}`;
       return {
         id: `${Date.now()}_cam`,
-        name: `Foto_Camera_${new Date().toLocaleTimeString('pt-BR').replace(/:/g, '-')}.${image.format || 'jpg'}`,
+        name: `Foto_Camera_${new Date().toLocaleTimeString('pt-BR').replace(/:/g, '-')}.jpeg`,
         type: 'image',
         mimeType,
-        size: Math.round((image.base64String.length * 3) / 4),
+        size: Math.round((cleanB64.length * 3) / 4),
         previewUrl: base64Data,
         base64Data,
       };

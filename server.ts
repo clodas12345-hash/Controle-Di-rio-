@@ -174,41 +174,67 @@ Retorne estritamente um objeto JSON válido (sem tags markdown, sem explicaçõe
 
     const contents: any[] = [systemPrompt];
 
-    // Collect all image inputs from any supported format
-    const rawImages: { base64: string; mimeType?: string }[] = [];
+    // Collect unique images from payload
+    const rawImages: { base64: string; mimeType: string }[] = [];
+    const seenBase64 = new Set<string>();
 
-    if (files && Array.isArray(files)) {
-      for (const f of files) {
-        if (f.imageBase64 || f.base64Data) {
-          rawImages.push({ base64: f.imageBase64 || f.base64Data, mimeType: f.mimeType });
+    const addImage = (b64Str?: string, mime?: string) => {
+      if (!b64Str || typeof b64Str !== 'string') return;
+      let cleanMime = mime || 'image/jpeg';
+      let cleanB64 = b64Str.trim();
+
+      if (cleanB64.startsWith('data:')) {
+        const match = cleanB64.match(/^data:([^;]+);base64,(.+)$/s);
+        if (match) {
+          cleanMime = match[1];
+          cleanB64 = match[2].trim();
+        } else {
+          const parts = cleanB64.split(',');
+          if (parts.length > 1) {
+            cleanB64 = parts[1].trim();
+          }
         }
       }
-    }
-    if (images && Array.isArray(images)) {
+
+      // Standardize mimeType strictly for Gemini API (never allow image/jpg)
+      if (cleanMime === 'image/jpg' || cleanMime === 'image/pjpeg') cleanMime = 'image/jpeg';
+      if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'].includes(cleanMime)) {
+        cleanMime = 'image/jpeg';
+      }
+
+      // Avoid duplicates
+      const hash = cleanB64.substring(0, 100) + cleanB64.length;
+      if (!seenBase64.has(hash) && cleanB64.length > 50) {
+        seenBase64.add(hash);
+        rawImages.push({ base64: cleanB64, mimeType: cleanMime });
+      }
+    };
+
+    if (files && Array.isArray(files) && files.length > 0) {
+      for (const f of files) {
+        if (f.imageBase64 || f.base64Data) {
+          addImage(f.imageBase64 || f.base64Data, f.mimeType);
+        }
+      }
+    } else if (images && Array.isArray(images) && images.length > 0) {
       for (const img of images) {
-        if (typeof img === 'string') rawImages.push({ base64: img });
-        else if (img?.imageBase64 || img?.base64) rawImages.push({ base64: img.imageBase64 || img.base64, mimeType: img.mimeType });
+        if (typeof img === 'string') addImage(img);
+        else if (img?.imageBase64 || img?.base64) addImage(img.imageBase64 || img.base64, img.mimeType);
       }
-    }
-    if (photos && Array.isArray(photos)) {
+    } else if (photos && Array.isArray(photos) && photos.length > 0) {
       for (const p of photos) {
-        if (typeof p === 'string') rawImages.push({ base64: p });
-        else if (p?.imageBase64 || p?.base64) rawImages.push({ base64: p.imageBase64 || p.base64, mimeType: p.mimeType });
+        if (typeof p === 'string') addImage(p);
+        else if (p?.imageBase64 || p?.base64) addImage(p.imageBase64 || p.base64, p.mimeType);
       }
-    }
-    if (image && typeof image === 'string') {
-      rawImages.push({ base64: image });
-    }
-    if (imageBase64 && typeof imageBase64 === 'string') {
-      rawImages.push({ base64: imageBase64 });
+    } else if (image || imageBase64) {
+      addImage(image || imageBase64);
     }
 
     for (const item of rawImages) {
-      const b64 = item.base64.includes(",") ? item.base64.split(",")[1] : item.base64;
       contents.push({
         inlineData: {
-          data: b64,
-          mimeType: item.mimeType || "image/jpeg"
+          data: item.base64,
+          mimeType: item.mimeType,
         }
       });
     }
