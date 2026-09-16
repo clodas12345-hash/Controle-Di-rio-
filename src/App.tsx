@@ -68,6 +68,7 @@ import {
   Copy,
   RefreshCw
 } from 'lucide-react';
+import { DEFAULT_CAR_PROFILE, DEFAULT_FIXED_EXPENSES_BY_MONTH, DEFAULT_DAILY_LOGS } from './defaultBackupData';
 import { motion } from 'motion/react';
 import {
   ResponsiveContainer,
@@ -611,25 +612,25 @@ export default function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (parsed && typeof parsed === 'object') {
+        if (parsed && typeof parsed === 'object' && parsed.modelName) {
           return {
             vehicleType: parsed.vehicleType || 'eletrico',
-            modelName: parsed.modelName ?? '',
-            licensePlate: parsed.licensePlate ?? '',
-            manufactureYear: parsed.manufactureYear ?? '',
-            color: parsed.color ?? '',
-            ownershipType: parsed.ownershipType || 'alugado',
-            currentKm: Math.round(parsed.currentKm ?? 0),
-            batteryCapacityKwh: parsed.batteryCapacityKwh ?? 0,
-            estimatedAutonomyKm: parsed.estimatedAutonomyKm ?? 0,
-            kwhCostRate: parsed.kwhCostRate ?? 0,
-            rentalOrWeeklyRate: parsed.rentalOrWeeklyRate ?? 0,
-            monthlyCarExpense: parsed.monthlyCarExpense ?? 0,
-            workScheduleType: parsed.workScheduleType || 'mon_to_sat_sundays_off',
-            customWorkDays: parsed.customWorkDays ?? {},
+            modelName: parsed.modelName ?? DEFAULT_CAR_PROFILE.modelName,
+            licensePlate: parsed.licensePlate ?? DEFAULT_CAR_PROFILE.licensePlate,
+            manufactureYear: parsed.manufactureYear ?? DEFAULT_CAR_PROFILE.manufactureYear,
+            color: parsed.color ?? DEFAULT_CAR_PROFILE.color,
+            ownershipType: parsed.ownershipType || DEFAULT_CAR_PROFILE.ownershipType,
+            currentKm: Math.round(parsed.currentKm ?? DEFAULT_CAR_PROFILE.currentKm),
+            batteryCapacityKwh: parsed.batteryCapacityKwh ?? DEFAULT_CAR_PROFILE.batteryCapacityKwh,
+            estimatedAutonomyKm: parsed.estimatedAutonomyKm ?? DEFAULT_CAR_PROFILE.estimatedAutonomyKm,
+            kwhCostRate: parsed.kwhCostRate ?? DEFAULT_CAR_PROFILE.kwhCostRate,
+            rentalOrWeeklyRate: parsed.rentalOrWeeklyRate ?? DEFAULT_CAR_PROFILE.rentalOrWeeklyRate,
+            monthlyCarExpense: parsed.monthlyCarExpense ?? DEFAULT_CAR_PROFILE.monthlyCarExpense,
+            workScheduleType: parsed.workScheduleType || DEFAULT_CAR_PROFILE.workScheduleType,
+            customWorkDays: parsed.customWorkDays ?? DEFAULT_CAR_PROFILE.customWorkDays,
             insurerName: parsed.insurerName ?? '',
             insurancePolicyNumber: parsed.insurancePolicyNumber ?? '',
-            nextMaintenanceKm: parsed.nextMaintenanceKm ?? '',
+            nextMaintenanceKm: parsed.nextMaintenanceKm ?? DEFAULT_CAR_PROFILE.nextMaintenanceKm,
             notes: parsed.notes ?? ''
           };
         }
@@ -637,7 +638,7 @@ export default function App() {
         console.error(e);
       }
     }
-    return TRULY_BLANK_CAR_PROFILE;
+    return DEFAULT_CAR_PROFILE;
   });
 
   // Fixed Monthly Expenses State - Inicia com dados limpos e saneados
@@ -646,7 +647,7 @@ export default function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (typeof parsed === 'object' && parsed !== null) {
+        if (typeof parsed === 'object' && parsed !== null && Object.keys(parsed).length > 0) {
           const sanitized = sanitizeFixedExpensesMap(parsed);
           localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify(sanitized));
           return sanitized;
@@ -655,7 +656,7 @@ export default function App() {
         console.error(e);
       }
     }
-    return {};
+    return DEFAULT_FIXED_EXPENSES_BY_MONTH;
   });
 
   const currentMonthKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
@@ -689,7 +690,7 @@ export default function App() {
     return monthFixedSum > 0 ? monthFixedSum : (carProfile.monthlyCarExpense || 0);
   };
 
-  // Store all daily logs - initialized with clean empty logs or saved data
+  // Store all daily logs - initialized with clean default logs or saved data
   const [logs, setLogs] = useState<DailyLog[]>(() => {
     let allStoredLogs: DailyLog[] = [];
     
@@ -699,7 +700,10 @@ export default function App() {
       try {
         const parsed = JSON.parse(cleanSaved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          allStoredLogs = performCalendarSweep(parsed, 2026);
+          const hasEntries = parsed.some((l: DailyLog) => (l.kmRodado || 0) > 0 || (l.app99?.earnings || 0) > 0 || (l.appUber?.earnings || 0) > 0);
+          if (hasEntries) {
+            allStoredLogs = performCalendarSweep(parsed, 2026);
+          }
         }
       } catch (e) {
         // ignore
@@ -707,7 +711,7 @@ export default function App() {
     }
 
     if (allStoredLogs.length === 0) {
-      allStoredLogs = generateCleanEmptyYearLogs(2026);
+      allStoredLogs = DEFAULT_DAILY_LOGS.length > 0 ? performCalendarSweep(DEFAULT_DAILY_LOGS, 2026) : generateCleanEmptyYearLogs(2026);
     }
 
     return allStoredLogs;
@@ -7347,12 +7351,12 @@ export default function App() {
                       Ações Rápidas & Configurações:
                     </span>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      {/* IMPORTAÇÃO DE DADOS EXCEL */}
+                      {/* CENTRAL DE BACKUP & IMPORTAÇÃO */}
                       <button
                         type="button"
                         onClick={() => {
                           setIsHelpModalOpen(false);
-                          setIsExcelImportOpen(true);
+                          setIsBackupModalOpen(true);
                         }}
                         className="p-3 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 hover:border-emerald-500/60 rounded-xl flex items-center gap-3 text-left transition-all cursor-pointer group"
                       >
@@ -7360,8 +7364,8 @@ export default function App() {
                           <FileSpreadsheet className="w-4 h-4 stroke-[2.5]" />
                         </div>
                         <div>
-                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Importar dados</span>
-                          <span className="text-[11px] text-zinc-400">Detecção automática (Planilhas, Backups ou Texto)</span>
+                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Backup & Importação</span>
+                          <span className="text-[11px] text-zinc-400">Exportar relatórios (Excel/JSON/WhatsApp) ou Restaurar dados</span>
                         </div>
                       </button>
 
@@ -7436,24 +7440,6 @@ export default function App() {
                         <div>
                           <span className="text-xs font-bold text-zinc-200 block group-hover:text-emerald-400">Fale Conosco (WhatsApp)</span>
                           <span className="text-[11px] text-zinc-400">Suporte direto com a equipe de engenharia</span>
-                        </div>
-                      </button>
-
-                      {/* CENTRAL DE BACKUP (EXCEL/CSV - DIA, SEMANA, MÊS, TUDO) */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsHelpModalOpen(false);
-                          setIsBackupModalOpen(true);
-                        }}
-                        className="p-3 bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 hover:border-emerald-500/40 rounded-xl flex items-center gap-3 text-left transition-all cursor-pointer group"
-                      >
-                        <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg group-hover:scale-110 transition-transform">
-                          <FileSpreadsheet className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <span className="text-xs font-bold text-zinc-200 block group-hover:text-emerald-400">Backup em Planilha Excel</span>
-                          <span className="text-[11px] text-zinc-400">Exportar por dia, semana, mês ou tudo (.csv)</span>
                         </div>
                       </button>
 
@@ -9038,6 +9024,11 @@ export default function App() {
           setIsBackupModalOpen(false);
           setIsHelpModalOpen(true);
         }}
+        onOpenImport={() => {
+          setIsBackupModalOpen(false);
+          setIsExcelImportOpen(true);
+        }}
+        onImportData={handleExcelImport}
         logs={logs}
         carProfile={carProfile}
         fixedExpensesByMonth={fixedExpensesByMonth}
