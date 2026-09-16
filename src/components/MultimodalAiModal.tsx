@@ -389,12 +389,20 @@ export const MultimodalAiModal: React.FC<MultimodalAiModalProps> = ({
           }
         }
 
+        const firstImage = payloadFiles[0]?.imageBase64;
+        const allImages = payloadFiles.map(f => f.imageBase64);
+
         const res = await fetchApi('/api/extract-receipt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             files: payloadFiles,
             textData: combinedSpreadsheetOrText,
+            text: combinedSpreadsheetOrText,
+            image: firstImage,
+            imageBase64: firstImage,
+            images: allImages,
+            photos: allImages,
             activeContext: {
               selectedMonth,
               selectedYear,
