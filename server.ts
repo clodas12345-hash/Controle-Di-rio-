@@ -208,7 +208,8 @@ Retorne estritamente um objeto JSON válido (sem tags markdown, sem explicaçõe
         cleanB64 = cleanB64.split(',')[1];
       }
 
-      // Sanitize base64 string strictly to valid Base64 characters
+      // Convert URL-safe base64 if present, then sanitize strictly
+      cleanB64 = cleanB64.replace(/-/g, '+').replace(/_/g, '/');
       cleanB64 = cleanB64.replace(/[^A-Za-z0-9+/=]/g, '');
       while (cleanB64.length % 4 !== 0) {
         cleanB64 += '=';
@@ -260,8 +261,8 @@ Retorne estritamente um objeto JSON válido (sem tags markdown, sem explicaçõe
     parts.push({ text: systemPrompt });
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: { parts },
+      model: "gemini-3.1-pro-preview",
+      contents: parts,
     });
 
     const rawText = response.text || "{}";
