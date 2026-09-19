@@ -486,9 +486,8 @@ export function BackupModal({
           }, 5000);
           return;
         } catch (fileErr: any) {
-          console.error('Falha crítica ao salvar no Filesystem nativo:', fileErr);
-          alert(`Erro ao salvar backup: ${fileErr.message || 'Erro desconhecido'}. Tente novamente ou verifique as permissões.`);
-          return; // Interrompe o fluxo para não abrir o compartilhamento em caso de erro no salvamento nativo
+          console.error('Falha ao salvar no Filesystem nativo:', fileErr);
+          // Não paramos aqui, tentamos os fallbacks (Share ou Browser Download)
         }
       }
     } catch (capErr) {
