@@ -415,121 +415,74 @@ export function BackupModal({
 
     const { content, type, extension } = getPreparedContent();
     const fileName = getExportFileName(extension);
-    let downloadedOrShared = false;
-    console.log(`handleDownload: fileName=${fileName}, isCapacitorNative=${Boolean((window as any)?.Capacitor?.isNativePlatform?.())}`);
+    
+    // 1. Tentar Capacitor (Nativo)
+    const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
+    console.log('handleDownload: isCapacitorNative=', isCapacitorNative);
 
-    // Helper 1: Download via Blob / link (Padrão para Navegadores e WebViews)
-    const triggerBrowserDownload = () => {
-      console.log('triggerBrowserDownload: tentando');
+    if (isCapacitorNative && typeof Filesystem !== 'undefined' && typeof Share !== 'undefined') {
       try {
-        const mime = extension === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json;charset=utf-8;';
-        const blob = new Blob([content], { type: mime });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.setAttribute('download', fileName);
-        link.style.display = 'none';
-        document.body.appendChild(link);
-        link.click();
-        setTimeout(() => {
-          try {
-            document.body.removeChild(link);
-            URL.revokeObjectURL(url);
-          } catch (_) {}
-        }, 1500);
-        console.log('triggerBrowserDownload: sucesso');
-        return true;
-      } catch (e) {
-        console.warn('Erro ao disparar download via Blob:', e);
-        return false;
+        // Primeiro tenta escrever o arquivo
+        await Filesystem.writeFile({
+          path: fileName,
+          data: content,
+          directory: Directory.Documents,
+          encoding: Encoding.UTF8,
+          recursive: true
+        });
+
+        // Obtém o URI real
+        const result = await Filesystem.getUri({
+          path: fileName,
+          directory: Directory.Documents
+        });
+
+        // Tenta compartilhar nativamente
+        await Share.share({
+          title: 'Backup GKD Controle Diário',
+          text: `Backup salvo: ${fileName}`,
+          url: result.uri,
+          dialogTitle: 'Salvar ou Compartilhar Arquivo de Backup'
+        });
+
+        setDownloadSuccess(true);
+        setSuccessMessage(`Backup salvo e pronto para compartilhar: ${fileName}`);
+        return;
+      } catch (nativeErr: any) {
+        console.error('Falha no fluxo nativo:', nativeErr);
+        // Fallback para WebShare ou Download padrão
       }
-    };
+    }
 
-    // Helper 2: Web Share API com Arquivo Real
-    const triggerWebFileShare = async () => {
-      console.log('triggerWebFileShare: tentando');
-      if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare) {
-        try {
-          const mime = extension === 'csv' ? 'text/csv' : 'application/json';
-          const file = new File([content], fileName, { type: mime });
-          if (navigator.canShare({ files: [file] })) {
-            await navigator.share({
-              title: 'Backup GKD Controle Diário',
-              text: `Backup gerado: ${fileName}`,
-              files: [file]
-            });
-            console.log('triggerWebFileShare: sucesso');
-            return true;
-          } else {
-            console.warn('triggerWebFileShare: navigator.canShare retornou false');
-          }
-        } catch (e: any) {
-          if (e.name === 'AbortError') return true;
-          console.warn('Falha no navigator.share com arquivos:', e);
-        }
-      }
-      return false;
-    };
-
-    // 1. Tentar Capacitor Filesystem se estiver em ambiente nativo real
-    try {
-      const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
-      console.log('handleDownload: isCapacitorNative=', isCapacitorNative);
-      if (isCapacitorNative && typeof Filesystem !== 'undefined' && Filesystem.writeFile) {
-        try {
-          await Filesystem.writeFile({
-            path: fileName,
-            data: content,
-            directory: Directory.Documents,
-            encoding: Encoding.UTF8,
-            recursive: true
-          });
-
+    // 2. Fallback Web
+    const { content: webContent, extension: webExt } = getPreparedContent();
+    const mime = webExt === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json;charset=utf-8;';
+    
+    // Tenta Web Share se disponível
+    if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare) {
+      try {
+        const file = new File([webContent], fileName, { type: mime });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: 'Backup', text: 'Backup' });
           setDownloadSuccess(true);
-          setSuccessMessage(`Arquivo salvo com sucesso em Documentos: ${fileName}`);
-          
-          setTimeout(() => {
-            setDownloadSuccess(false);
-            setSuccessMessage(null);
-          }, 5000);
-          console.log('handleDownload: Capacitor Filesystem sucesso');
           return;
-        } catch (fileErr: any) {
-          console.error('Falha ao salvar no Filesystem nativo:', fileErr);
-          alert(`Falha no salvamento nativo: ${fileErr.message || 'Erro desconhecido'}. Tentando opções alternativas...`);
         }
-      }
-    } catch (capErr) {
-      console.warn('Capacitor detection/fallback:', capErr);
+      } catch (e) { console.warn('WebShare falhou', e); }
     }
 
-    // 2. Tentar Web Share API com arquivo
-    const sharedViaWeb = await triggerWebFileShare();
-    if (sharedViaWeb) {
+    // 3. Fallback Download Tradicional
+    try {
+      const blob = new Blob([webContent], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', fileName);
+      link.click();
+      URL.revokeObjectURL(url);
       setDownloadSuccess(true);
-      setSuccessMessage(`Arquivo gerado: ${fileName}`);
-      setTimeout(() => {
-        setDownloadSuccess(false);
-        setSuccessMessage(null);
-      }, 3500);
-      downloadedOrShared = true;
-    }
-
-    // 3. Executar o download tradicional
-    const downloadOk = triggerBrowserDownload();
-    if (downloadOk && !downloadedOrShared) {
-      setDownloadSuccess(true);
-      setSuccessMessage(`Download de ${fileName} concluído! Verifique a pasta Downloads.`);
-      setTimeout(() => {
-        setDownloadSuccess(false);
-        setSuccessMessage(null);
-      }, 3500);
-      downloadedOrShared = true;
-    }
-
-    // 4. Fallback final
-    if (!downloadedOrShared) {
-      handleCopyText();
+      setSuccessMessage('Download iniciado!');
+    } catch (e) {
+      alert('Não foi possível realizar o download.');
     }
   };
 
