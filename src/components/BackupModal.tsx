@@ -468,28 +468,31 @@ export function BackupModal({
     try {
       const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
       if (isCapacitorNative && typeof Filesystem !== 'undefined' && Filesystem.writeFile) {
-        const result = await Filesystem.writeFile({
-          path: fileName,
-          data: content,
-          directory: Directory.Documents,
-          encoding: Encoding.UTF8,
-          recursive: true
-        });
+        try {
+          await Filesystem.writeFile({
+            path: fileName,
+            data: content,
+            directory: Directory.Documents,
+            encoding: Encoding.UTF8,
+            recursive: true
+          });
 
-        setDownloadSuccess(true);
-        setSuccessMessage(`Arquivo salvo com sucesso em Documentos: ${fileName}`);
-        
-        // Removemos o auto-share aqui, e deixamos o compartilhamento manual se necessário
-        // futuramente podemos adicionar um botão de "Compartilhar agora" aqui.
-        
-        setTimeout(() => {
-          setDownloadSuccess(false);
-          setSuccessMessage(null);
-        }, 5000);
-        return;
+          setDownloadSuccess(true);
+          setSuccessMessage(`Arquivo salvo com sucesso em Documentos: ${fileName}`);
+          
+          setTimeout(() => {
+            setDownloadSuccess(false);
+            setSuccessMessage(null);
+          }, 5000);
+          return;
+        } catch (fileErr: any) {
+          console.error('Falha crítica ao salvar no Filesystem nativo:', fileErr);
+          alert(`Erro ao salvar backup: ${fileErr.message || 'Erro desconhecido'}. Tente novamente ou verifique as permissões.`);
+          return; // Interrompe o fluxo para não abrir o compartilhamento em caso de erro no salvamento nativo
+        }
       }
     } catch (capErr) {
-      console.warn('Capacitor Filesystem fallback:', capErr);
+      console.warn('Capacitor detection/fallback:', capErr);
     }
 
     // 2. Tentar Web Share API com arquivo (perfeito para celulares Android/iOS no navegador ou PWA)
