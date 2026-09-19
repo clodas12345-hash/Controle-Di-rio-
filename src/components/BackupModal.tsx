@@ -476,23 +476,16 @@ export function BackupModal({
           recursive: true
         });
 
-        if (typeof Share !== 'undefined' && Share.share && result.uri) {
-          try {
-            await Share.share({
-              title: 'Backup Controle Diário',
-              text: `Backup salvo: ${fileName}`,
-              url: result.uri,
-              dialogTitle: 'Salvar ou Compartilhar Arquivo de Backup'
-            });
-          } catch (_) {}
-        }
-
         setDownloadSuccess(true);
-        setSuccessMessage(`Arquivo salvo em Documentos / Downloads: ${fileName}`);
+        setSuccessMessage(`Arquivo salvo com sucesso em Documentos: ${fileName}`);
+        
+        // Removemos o auto-share aqui, e deixamos o compartilhamento manual se necessário
+        // futuramente podemos adicionar um botão de "Compartilhar agora" aqui.
+        
         setTimeout(() => {
           setDownloadSuccess(false);
           setSuccessMessage(null);
-        }, 3500);
+        }, 5000);
         return;
       }
     } catch (capErr) {
