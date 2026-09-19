@@ -224,16 +224,13 @@ export function BackupModal({
 
   // Nome dinâmico para o arquivo exportado
   const getExportFileName = (ext: string) => {
-    const cleanPlate = (carProfile?.licensePlate || 'GKD').replace(/[^a-zA-Z0-9]/g, '');
-    let periodSuffix = 'geral';
-    if (scope === 'day') periodSuffix = `dia-${selectedDay}`;
-    else if (scope === 'week') {
-      const { start, end } = getWeekRange(selectedDay);
-      periodSuffix = `semana-${start}-a-${end}`;
-    } else if (scope === 'month') periodSuffix = `mes-${selectedMonth}`;
-    else if (scope === 'custom') periodSuffix = `periodo-${customStart}-a-${customEnd}`;
+    const now = new Date();
+    const day = String(now.getDate()).padStart(2, '0');
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const year = now.getFullYear();
+    const formattedDate = `${day}-${month}-${year}`;
     
-    return `backup-controle-diario-${cleanPlate}-${periodSuffix}.${ext}`;
+    return `Backup_Controle_Diario_${formattedDate}.${ext}`;
   };
 
   // Gerador de CSV (compatível com Excel PT-BR / UTF-8 com BOM)

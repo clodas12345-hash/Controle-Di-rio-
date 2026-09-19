@@ -3,6 +3,11 @@ import path from "path";
 import fs from "fs";
 import { GoogleGenAI } from "@google/genai";
 import heicConvert from "heic-convert";
+import { initializeApp } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+
+initializeApp();
+const db = getFirestore();
 
 process.on("uncaughtException", (err) => {
   console.error("[server] Uncaught Exception:", err);
@@ -19,7 +24,11 @@ const server = app.listen(PORT, "0.0.0.0", () => {
   console.log(`[server] Express listening instantly on port ${PORT}`);
 });
 
-const isProduction = process.env.NODE_ENV === "production" || process.env.PORT !== undefined || fs.existsSync(path.join(process.cwd(), "dist", "index.html"));
+const isProduction = process.env.NODE_ENV === "production";
+
+const getDistPath = () => {
+  return path.join(process.cwd(), "dist");
+};
 
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
@@ -34,26 +43,37 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-const getDistPath = () => {
-  return fs.existsSync(path.join(process.cwd(), "dist", "index.html"))
-    ? path.join(process.cwd(), "dist")
-    : (typeof __dirname !== "undefined" && fs.existsSync(path.join(__dirname, "index.html"))
-        ? __dirname
-        : process.cwd());
-};
+// Bulk import endpoint
+app.post("/api/import-backup-bulk", async (req, res) => {
+  try {
+    const data = req.body;
+    if (!data || !data.lancamentosDiarios) {
+      return res.status(400).json({ error: "Dados inválidos" });
+    }
+
+    const logs = data.lancamentosDiarios;
+    const dbRef = db.collection('dailyLogs');
+    
+    // Process in batches of 500 (Firestore limit)
+    for (let i = 0; i < logs.length; i += 500) {
+      const batch = db.batch();
+      const chunk = logs.slice(i, i + 500);
+      chunk.forEach((log: any) => {
+        const docRef = dbRef.doc(log.id || `${Date.now()}_${Math.random()}`);
+        batch.set(docRef, log);
+      });
+      await batch.commit();
+    }
+    
+    res.json({ success: true, count: logs.length });
+  } catch (e: any) {
+    console.error("[server] /api/import-backup-bulk error:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // Health check endpoints for Cloud Run
 app.get(["/health", "/api/health", "/_health"], (req, res) => {
-  res.status(200).json({ status: "ok", mode: isProduction ? "production" : "development" });
-});
-
-// Smart root route: serves JSON for health probes, index.html for browser navigation
-app.get("/", (req, res) => {
-  const accept = req.headers.accept || "";
-  if (accept.includes("text/html") && isProduction) {
-    const distPath = getDistPath();
-    return res.sendFile(path.join(distPath, "index.html"));
-  }
   res.status(200).json({ status: "ok", mode: isProduction ? "production" : "development" });
 });
 
@@ -109,7 +129,7 @@ Retorne estritamente um objeto JSON válido (sem markdown extra, sem blocos de c
     parts.push({ text: promptText });
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.7-flash",
+      model: "gemini-2.5-flash",
       contents: { parts },
     });
 
@@ -295,7 +315,7 @@ Retorne estritamente um objeto JSON válido (sem tags markdown, sem explicaçõe
     parts.push({ text: systemPrompt });
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.7-flash",
+      model: "gemini-2.5-flash",
       contents: parts,
     });
 
