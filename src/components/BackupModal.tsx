@@ -407,6 +407,7 @@ export function BackupModal({
 
   // Baixar / Gravar no Celular ou Navegador
   const handleDownload = async () => {
+    console.log('handleDownload: Iniciando');
     if (!hasData) {
       alert("Nenhum dado encontrado no período selecionado.");
       return;
@@ -415,9 +416,11 @@ export function BackupModal({
     const { content, type, extension } = getPreparedContent();
     const fileName = getExportFileName(extension);
     let downloadedOrShared = false;
+    console.log(`handleDownload: fileName=${fileName}, isCapacitorNative=${Boolean((window as any)?.Capacitor?.isNativePlatform?.())}`);
 
     // Helper 1: Download via Blob / link (Padrão para Navegadores e WebViews)
     const triggerBrowserDownload = () => {
+      console.log('triggerBrowserDownload: tentando');
       try {
         const mime = extension === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json;charset=utf-8;';
         const blob = new Blob([content], { type: mime });
@@ -434,6 +437,7 @@ export function BackupModal({
             URL.revokeObjectURL(url);
           } catch (_) {}
         }, 1500);
+        console.log('triggerBrowserDownload: sucesso');
         return true;
       } catch (e) {
         console.warn('Erro ao disparar download via Blob:', e);
@@ -441,8 +445,9 @@ export function BackupModal({
       }
     };
 
-    // Helper 2: Web Share API com Arquivo Real (Safari iOS, Chrome Mobile, Android WebView)
+    // Helper 2: Web Share API com Arquivo Real
     const triggerWebFileShare = async () => {
+      console.log('triggerWebFileShare: tentando');
       if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare) {
         try {
           const mime = extension === 'csv' ? 'text/csv' : 'application/json';
@@ -453,10 +458,12 @@ export function BackupModal({
               text: `Backup gerado: ${fileName}`,
               files: [file]
             });
+            console.log('triggerWebFileShare: sucesso');
             return true;
+          } else {
+            console.warn('triggerWebFileShare: navigator.canShare retornou false');
           }
         } catch (e: any) {
-          // Usuário pode ter cancelado a janela de compartilhamento (AbortError), mas o recurso funcionou
           if (e.name === 'AbortError') return true;
           console.warn('Falha no navigator.share com arquivos:', e);
         }
@@ -467,6 +474,7 @@ export function BackupModal({
     // 1. Tentar Capacitor Filesystem se estiver em ambiente nativo real
     try {
       const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
+      console.log('handleDownload: isCapacitorNative=', isCapacitorNative);
       if (isCapacitorNative && typeof Filesystem !== 'undefined' && Filesystem.writeFile) {
         try {
           await Filesystem.writeFile({
@@ -484,17 +492,18 @@ export function BackupModal({
             setDownloadSuccess(false);
             setSuccessMessage(null);
           }, 5000);
+          console.log('handleDownload: Capacitor Filesystem sucesso');
           return;
         } catch (fileErr: any) {
           console.error('Falha ao salvar no Filesystem nativo:', fileErr);
-          // Não paramos aqui, tentamos os fallbacks (Share ou Browser Download)
+          alert(`Falha no salvamento nativo: ${fileErr.message || 'Erro desconhecido'}. Tentando opções alternativas...`);
         }
       }
     } catch (capErr) {
       console.warn('Capacitor detection/fallback:', capErr);
     }
 
-    // 2. Tentar Web Share API com arquivo (perfeito para celulares Android/iOS no navegador ou PWA)
+    // 2. Tentar Web Share API com arquivo
     const sharedViaWeb = await triggerWebFileShare();
     if (sharedViaWeb) {
       setDownloadSuccess(true);
@@ -506,7 +515,7 @@ export function BackupModal({
       downloadedOrShared = true;
     }
 
-    // 3. Executar o download tradicional por link / blob (sempre executado para garantir o salvamento no dispositivo)
+    // 3. Executar o download tradicional
     const downloadOk = triggerBrowserDownload();
     if (downloadOk && !downloadedOrShared) {
       setDownloadSuccess(true);
@@ -518,7 +527,7 @@ export function BackupModal({
       downloadedOrShared = true;
     }
 
-    // 4. Fallback final: Copiar para área de transferência se nada acima disparou
+    // 4. Fallback final
     if (!downloadedOrShared) {
       handleCopyText();
     }
