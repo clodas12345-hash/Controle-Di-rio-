@@ -413,9 +413,9 @@ export function BackupModal({
 
     const { content, type, extension } = getPreparedContent();
     const fileName = getExportFileName(extension);
-    
-    // 1. Fallback Web Share (Prioridade)
     const mime = extension === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json;charset=utf-8;';
+
+    // 1. Tentar Web Share (Prioridade para Mobile)
     if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare) {
       try {
         const file = new File([content], fileName, { type: mime });
@@ -427,19 +427,34 @@ export function BackupModal({
       } catch (e) { console.warn('WebShare falhou', e); }
     }
 
-    // 2. Fallback Download Tradicional (Garantido em navegadores)
+    // 2. Tentar Download Tradicional
     try {
       const blob = new Blob([content], { type: mime });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
       link.setAttribute('download', fileName);
+      link.style.display = 'none';
+      document.body.appendChild(link);
       link.click();
+      document.body.removeChild(link);
       URL.revokeObjectURL(url);
       setDownloadSuccess(true);
       setSuccessMessage('Download iniciado!');
+      return;
     } catch (e) {
-      alert('Não foi possível realizar o download.');
+      console.warn('Download via link falhou, tentando window.open', e);
+    }
+
+    // 3. Fallback: Abrir em nova janela/aba (Garante visualização para salvar manualmente no Android)
+    try {
+      const blob = new Blob([content], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+      setDownloadSuccess(true);
+      setSuccessMessage('Backup aberto em nova janela. Salve manualmente.');
+    } catch (e) {
+      alert('Não foi possível realizar o download. Tente copiar o texto.');
     }
   };
 
