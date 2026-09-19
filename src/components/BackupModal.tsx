@@ -25,8 +25,6 @@ import {
   TrendingUp,
   FileText
 } from 'lucide-react';
-import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
-import { Share } from '@capacitor/share';
 import { GkdMobilityLogo } from './GkdMobilityLogo';
 import { getApiUrl, isMobileOrNativeApp } from '../lib/api';
 import { DEFAULT_DAILY_LOGS, DEFAULT_FIXED_EXPENSES_BY_MONTH, DEFAULT_CAR_PROFILE } from '../defaultBackupData';
@@ -416,52 +414,11 @@ export function BackupModal({
     const { content, type, extension } = getPreparedContent();
     const fileName = getExportFileName(extension);
     
-    // 1. Tentar Capacitor (Nativo)
-    const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
-    console.log('handleDownload: isCapacitorNative=', isCapacitorNative);
-
-    if (isCapacitorNative && typeof Filesystem !== 'undefined' && typeof Share !== 'undefined') {
-      try {
-        // Primeiro tenta escrever o arquivo
-        await Filesystem.writeFile({
-          path: fileName,
-          data: content,
-          directory: Directory.Documents,
-          encoding: Encoding.UTF8,
-          recursive: true
-        });
-
-        // Obtém o URI real
-        const result = await Filesystem.getUri({
-          path: fileName,
-          directory: Directory.Documents
-        });
-
-        // Tenta compartilhar nativamente
-        await Share.share({
-          title: 'Backup GKD Controle Diário',
-          text: `Backup salvo: ${fileName}`,
-          url: result.uri,
-          dialogTitle: 'Salvar ou Compartilhar Arquivo de Backup'
-        });
-
-        setDownloadSuccess(true);
-        setSuccessMessage(`Backup salvo e pronto para compartilhar: ${fileName}`);
-        return;
-      } catch (nativeErr: any) {
-        console.error('Falha no fluxo nativo:', nativeErr);
-        // Fallback para WebShare ou Download padrão
-      }
-    }
-
-    // 2. Fallback Web
-    const { content: webContent, extension: webExt } = getPreparedContent();
-    const mime = webExt === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json;charset=utf-8;';
-    
-    // Tenta Web Share se disponível
+    // 1. Fallback Web Share (Prioridade)
+    const mime = extension === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json;charset=utf-8;';
     if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare) {
       try {
-        const file = new File([webContent], fileName, { type: mime });
+        const file = new File([content], fileName, { type: mime });
         if (navigator.canShare({ files: [file] })) {
           await navigator.share({ files: [file], title: 'Backup', text: 'Backup' });
           setDownloadSuccess(true);
@@ -470,9 +427,9 @@ export function BackupModal({
       } catch (e) { console.warn('WebShare falhou', e); }
     }
 
-    // 3. Fallback Download Tradicional
+    // 2. Fallback Download Tradicional (Garantido em navegadores)
     try {
-      const blob = new Blob([webContent], { type: mime });
+      const blob = new Blob([content], { type: mime });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
