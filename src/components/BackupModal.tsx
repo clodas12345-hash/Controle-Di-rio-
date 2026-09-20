@@ -417,29 +417,29 @@ export function BackupModal({
     const fileName = getExportFileName(extension);
     const mime = extension === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json;charset=utf-8;';
 
-    // 1. Tentar Capacitor Native (Salvar Direto no Dispositivo) - Ideal para APK Android
+    // 1. Tentar Capacitor Native (Salvar Direto no Armazenamento Seguro do App)
     const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
     if (isCapacitorNative && typeof Filesystem !== 'undefined') {
       try {
         console.log('Tentando salvamento direto via Capacitor Filesystem...');
         
-        // Grava o arquivo direto na pasta de Documentos do celular
+        // Salva diretamente na pasta interna de dados do App, compatível com Android 11+
         await Filesystem.writeFile({
           path: fileName,
           data: content,
-          directory: Directory.Documents,
+          directory: Directory.Data,
           encoding: Encoding.UTF8
         });
 
-        alert(`Arquivo salvo com sucesso na pasta de Documentos!\nNome: ${fileName}`);
+        alert(`Arquivo de backup gravado com sucesso no armazenamento local!\nNome: ${fileName}`);
 
         setDownloadSuccess(true);
         if (typeof setSuccessMessage === 'function') {
-          setSuccessMessage(`Salvo em Documentos: ${fileName}`);
+          setSuccessMessage(`Salvo localmente: ${fileName}`);
         }
         return;
       } catch (nativeErr: any) {
-        console.warn('Falha ao salvar direto no Filesystem, tentando alternativas:', nativeErr);
+        console.warn('Falha ao salvar no armazenamento seguro do app, tentando alternativas:', nativeErr);
       }
     }
 
