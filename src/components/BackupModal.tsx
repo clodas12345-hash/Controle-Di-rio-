@@ -415,78 +415,49 @@ export function BackupModal({
 
     const { content, type, extension } = getPreparedContent();
     const fileName = getExportFileName(extension);
-    
-    // Ajuste do MIME type para evitar rejeição do sistema operacional
-    const mime = extension === 'csv' ? 'text/csv' : 'application/json';
+    const mime = extension === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json;charset=utf-8;';
 
-    // 1. Tentar Capacitor Native (Filesystem Cache + Share) - Ideal para APK Android/iOS
-    // Correção: Verificação robusta de segurança para checar se as variáveis globais realmente existem
+    // 1. Tentar Capacitor Native (Salvar Direto no Dispositivo) - Ideal para APK Android
     const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
-    
-    if (isCapacitorNative && typeof Filesystem !== 'undefined' && typeof Share !== 'undefined') {
+    if (isCapacitorNative && typeof Filesystem !== 'undefined') {
       try {
-        console.log('Tentando fluxo nativo Capacitor...');
+        console.log('Tentando salvamento direto via Capacitor Filesystem...');
         
-        // Grava o arquivo no Cache do aplicativo
+        // Grava o arquivo direto na pasta de Documentos do celular
         await Filesystem.writeFile({
           path: fileName,
           data: content,
-          directory: Directory.Cache,
+          directory: Directory.Documents,
           encoding: Encoding.UTF8
         });
 
-        // Recupera a URI correta
-        const uriResult = await Filesystem.getUri({
-          path: fileName,
-          directory: Directory.Cache
-        });
-
-        // Compartilha usando a URI nativa
-        await Share.share({
-          title: 'Backup GKD Controle Diário',
-          text: `Arquivo de backup gerado: ${fileName}`,
-          url: uriResult.uri, // Garante que o caminho file:// vá correto
-          dialogTitle: 'Salvar ou Compartilhar Arquivo de Backup'
-        });
+        alert(`Arquivo salvo com sucesso na pasta de Documentos!\nNome: ${fileName}`);
 
         setDownloadSuccess(true);
         if (typeof setSuccessMessage === 'function') {
-          setSuccessMessage(`Arquivo pronto para salvar: ${fileName}`);
+          setSuccessMessage(`Salvo em Documentos: ${fileName}`);
         }
         return;
       } catch (nativeErr: any) {
-        console.error('Falha no fluxo Capacitor nativo, tentando alternativas:', nativeErr);
-        // Não interrompe, deixa o código tentar o próximo método (Web Share ou link)
+        console.warn('Falha ao salvar direto no Filesystem, tentando alternativas:', nativeErr);
       }
     }
 
-    // 2. Tentar Web Share API (Geralmente funciona em browsers mobile como Safari/Chrome)
+    // 2. Tentar Web Share API (Fallback)
     if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare) {
       try {
-        // Importante: Tirar o ";charset=utf-8" de dentro do objeto File para não quebrar no mobile
         const file = new File([content], fileName, { type: mime });
-        
         if (navigator.canShare({ files: [file] })) {
-          await navigator.share({ 
-            files: [file], 
-            title: 'Backup GKD', 
-            text: 'Arquivo de Backup' 
-          });
+          await navigator.share({ files: [file], title: 'Backup', text: 'Backup' });
           setDownloadSuccess(true);
-          if (typeof setSuccessMessage === 'function') {
-            setSuccessMessage('Compartilhamento aberto com sucesso!');
-          }
           return;
         }
-      } catch (e) { 
-        console.warn('WebShare falhou ou foi cancelado pelo usuário', e); 
-      }
+      } catch (e) { console.warn('WebShare falhou', e); }
     }
 
-    // 3. Tentar Download Tradicional (Fallback apenas para Computador/Navegador Web)
+    // 3. Tentar Download Tradicional (Browser/Computador)
     try {
-      console.log('Tentando download tradicional via link...');
-      const blob = new Blob([content], { type: `${mime};charset=utf-8;` });
+      const blob = new Blob([content], { type: mime });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -496,15 +467,14 @@ export function BackupModal({
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      
       setDownloadSuccess(true);
       if (typeof setSuccessMessage === 'function') {
         setSuccessMessage('Download iniciado!');
       }
       return;
     } catch (e) {
-      console.error('Download via link falhou completamente', e);
-      alert('Não foi possível realizar o download automático neste dispositivo.');
+      console.warn('Download via link falhou', e);
+      alert('Não foi possível realizar o download automático.');
     }
   };
 
@@ -1371,19 +1341,6 @@ export function BackupModal({
                       <span className="text-sm font-bold block">Enviar no WhatsApp</span>
                       <span className="text-[10px] font-normal text-white/90">Resumo completo formatado</span>
                     </div>
-                  </button>
-                </div>
-
-                {/* Copiar Texto */}
-                <div className="flex justify-center pt-1">
-                  <button
-                    type="button"
-                    onClick={handleCopyText}
-                    disabled={!hasData}
-                    className="py-2 px-4 bg-zinc-900/80 hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed border border-zinc-800 text-zinc-300 text-xs font-medium rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-colors"
-                  >
-                    {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-zinc-400" />}
-                    <span>{copied ? 'Conteúdo Copiado!' : 'Copiar Texto para Área de Transferência'}</span>
                   </button>
                 </div>
               </div>
