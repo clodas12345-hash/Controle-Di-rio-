@@ -10,6 +10,7 @@ import { MultimodalAiModal } from './components/MultimodalAiModal';
 import { ConflictResolverModal, ConflictData } from './components/ConflictResolverModal';
 import { requestNotificationPermission, sendAppNotification } from './services/notificationService';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
+import JSZip from 'jszip';
 import { 
   Car, 
   Gauge,
@@ -1417,63 +1418,83 @@ export default function App() {
     }
   };
 
-  const handleInternalImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleInternalImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const text = event.target?.result as string;
-        const parsed = JSON.parse(text);
+    try {
+      let text = '';
+      const isZip = file.name.endsWith('.zip') || file.type === 'application/zip' || file.type === 'application/x-zip-compressed';
 
-        if (parsed && (Array.isArray(parsed.dailyLogs) || typeof parsed.fixedExpensesByMonth === 'object' || parsed.localStorageSnapshot || Array.isArray(parsed))) {
-          if (parsed.localStorageSnapshot && typeof parsed.localStorageSnapshot === 'object') {
-            for (const [k, v] of Object.entries(parsed.localStorageSnapshot)) {
-              if (typeof v === 'string') {
-                localStorage.setItem(k, v);
-              }
+      if (isZip) {
+        const zip = new JSZip();
+        const zipContent = await zip.loadAsync(file);
+        const jsonFileName = Object.keys(zipContent.files).find(filename => filename.endsWith('.json') || !zipContent.files[filename].dir);
+        if (jsonFileName) {
+          text = await zipContent.files[jsonFileName].async('text');
+        } else {
+          throw new Error('Nenhum arquivo JSON encontrado no arquivo ZIP.');
+        }
+      } else {
+        text = await file.text();
+      }
+
+      if (text.startsWith('PK\x03\x04') || text.startsWith('PK\x05\x06')) {
+        const zip = new JSZip();
+        const zipContent = await zip.loadAsync(file);
+        const jsonFileName = Object.keys(zipContent.files).find(filename => filename.endsWith('.json') || !zipContent.files[filename].dir);
+        if (jsonFileName) {
+          text = await zipContent.files[jsonFileName].async('text');
+        }
+      }
+
+      const parsed = JSON.parse(text);
+
+      if (parsed && (Array.isArray(parsed.dailyLogs) || typeof parsed.fixedExpensesByMonth === 'object' || parsed.localStorageSnapshot || Array.isArray(parsed))) {
+        if (parsed.localStorageSnapshot && typeof parsed.localStorageSnapshot === 'object') {
+          for (const [k, v] of Object.entries(parsed.localStorageSnapshot)) {
+            if (typeof v === 'string') {
+              localStorage.setItem(k, v);
             }
           }
-
-          const importedLogs = Array.isArray(parsed) ? parsed : (parsed.dailyLogs || null);
-          const importedFixed = parsed.fixedExpensesByMonth || null;
-          const importedProfile = parsed.carProfile || null;
-
-          if (importedLogs && Array.isArray(importedLogs) && importedLogs.length > 0) {
-            setLogs(importedLogs);
-            localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(importedLogs));
-          }
-
-          if (importedFixed && typeof importedFixed === 'object') {
-            setFixedExpensesByMonth(importedFixed);
-            localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify(importedFixed));
-          }
-
-          if (importedProfile && typeof importedProfile === 'object' && importedProfile.modelName) {
-            setCarProfile(importedProfile);
-            localStorage.setItem('driver_car_profile_v2', JSON.stringify(importedProfile));
-          }
-
-          setInternalBackupMessage('Backup completo importado e restaurado com sucesso! Atualizando sistema...');
-          setTimeout(() => setInternalBackupMessage(null), 6000);
-          setIsHelpModalOpen(false);
-
-          setTimeout(() => {
-            window.location.reload();
-          }, 1500);
-        } else {
-          setInternalBackupMessage('Arquivo de backup inválido ou formato incompatível.');
-          setTimeout(() => setInternalBackupMessage(null), 6000);
         }
-      } catch (err: any) {
-        console.error('Erro ao importar backup interno:', err);
-        setInternalBackupMessage('Erro ao ler o arquivo JSON de backup.');
+
+        const importedLogs = Array.isArray(parsed) ? parsed : (parsed.dailyLogs || null);
+        const importedFixed = parsed.fixedExpensesByMonth || null;
+        const importedProfile = parsed.carProfile || null;
+
+        if (importedLogs && Array.isArray(importedLogs) && importedLogs.length > 0) {
+          setLogs(importedLogs);
+          localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(importedLogs));
+        }
+
+        if (importedFixed && typeof importedFixed === 'object') {
+          setFixedExpensesByMonth(importedFixed);
+          localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify(importedFixed));
+        }
+
+        if (importedProfile && typeof importedProfile === 'object' && importedProfile.modelName) {
+          setCarProfile(importedProfile);
+          localStorage.setItem('driver_car_profile_v2', JSON.stringify(importedProfile));
+        }
+
+        setInternalBackupMessage('Backup completo importado e restaurado com sucesso! Atualizando sistema...');
+        setTimeout(() => setInternalBackupMessage(null), 6000);
+        setIsHelpModalOpen(false);
+
+        setTimeout(() => {
+          window.location.reload();
+        }, 1500);
+      } else {
+        setInternalBackupMessage('Arquivo de backup inválido ou formato incompatível.');
         setTimeout(() => setInternalBackupMessage(null), 6000);
       }
-      if (e.target) e.target.value = '';
-    };
-    reader.readAsText(file);
+    } catch (err: any) {
+      console.error('Erro ao importar backup interno:', err);
+      setInternalBackupMessage('Erro ao ler o arquivo de backup (formato incompatível).');
+      setTimeout(() => setInternalBackupMessage(null), 6000);
+    }
+    if (e.target) e.target.value = '';
   };
 
   // Auto-hide bottom navigation dock during inputs / editing / modal filling
@@ -7635,7 +7656,7 @@ export default function App() {
                         type="file" 
                         ref={internalFileInputRef} 
                         onChange={handleInternalImportFile} 
-                        accept=".json" 
+                        accept=".json,.zip" 
                         className="hidden" 
                       />
 
