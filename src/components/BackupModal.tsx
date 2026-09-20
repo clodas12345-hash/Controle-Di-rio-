@@ -415,49 +415,29 @@ export function BackupModal({
 
     const { content, type, extension } = getPreparedContent();
     const fileName = getExportFileName(extension);
-    const mime = extension === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json;charset=utf-8;';
+    const mime = extension === 'csv' ? 'text/csv' : 'application/json';
 
-    // 1. Tentar Capacitor Native (Salvar Direto no Armazenamento Seguro do App)
-    const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
-    if (isCapacitorNative && typeof Filesystem !== 'undefined') {
-      try {
-        console.log('Tentando salvamento direto via Capacitor Filesystem...');
-        
-        // Salva diretamente na pasta interna de dados do App, compatível com Android 11+
-        await Filesystem.writeFile({
-          path: fileName,
-          data: content,
-          directory: Directory.Data,
-          encoding: Encoding.UTF8
-        });
-
-        alert(`Arquivo de backup gravado com sucesso no armazenamento local!\nNome: ${fileName}`);
-
-        setDownloadSuccess(true);
-        if (typeof setSuccessMessage === 'function') {
-          setSuccessMessage(`Salvo localmente: ${fileName}`);
-        }
-        return;
-      } catch (nativeErr: any) {
-        console.warn('Falha ao salvar no armazenamento seguro do app, tentando alternativas:', nativeErr);
-      }
-    }
-
-    // 2. Tentar Web Share API (Fallback)
-    if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare) {
+    // 1. Forçar fluxo via Web Share / Capacitor Share para permitir salvar na pasta Downloads pública
+    if (typeof navigator !== 'undefined' && navigator.share) {
       try {
         const file = new File([content], fileName, { type: mime });
-        if (navigator.canShare({ files: [file] })) {
-          await navigator.share({ files: [file], title: 'Backup', text: 'Backup' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ 
+            files: [file], 
+            title: 'Salvar Backup', 
+            text: 'Selecione "Salvar em Arquivos" ou escolha uma pasta para baixar o backup.' 
+          });
           setDownloadSuccess(true);
           return;
         }
-      } catch (e) { console.warn('WebShare falhou', e); }
+      } catch (e) { 
+        console.warn('WebShare falhou, tentando método tradicional...', e); 
+      }
     }
 
-    // 3. Tentar Download Tradicional (Browser/Computador)
+    // 2. Download Tradicional (Fallback apenas para Computador/Navegador Web)
     try {
-      const blob = new Blob([content], { type: mime });
+      const blob = new Blob([content], { type: `${mime};charset=utf-8;` });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -468,13 +448,10 @@ export function BackupModal({
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
       setDownloadSuccess(true);
-      if (typeof setSuccessMessage === 'function') {
-        setSuccessMessage('Download iniciado!');
-      }
       return;
     } catch (e) {
-      console.warn('Download via link falhou', e);
-      alert('Não foi possível realizar o download automático.');
+      console.error('Falha geral no download', e);
+      alert('Não foi possível salvar o arquivo neste dispositivo.');
     }
   };
 
