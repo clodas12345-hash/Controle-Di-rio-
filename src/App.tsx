@@ -1381,24 +1381,22 @@ export default function App() {
 
       const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
       if (isCapacitorNative && typeof Filesystem !== 'undefined') {
-        let status = await Filesystem.checkPermissions();
-        if (status.publicStorage !== 'granted') {
-          status = await Filesystem.requestPermissions();
-        }
-        if (status.publicStorage === 'granted') {
+        try {
           await Filesystem.writeFile({
             path: fileName,
             data: content,
-            directory: Directory.Documents,
+            directory: Directory.Data,
             encoding: Encoding.UTF8
           });
-          setInternalBackupMessage(`Sucesso! Backup (${scope.toUpperCase()}) salvo na pasta de Documentos:\n${fileName}`);
+          setInternalBackupMessage(`Sucesso! Salvo na memória interna do celular:\n${fileName}`);
           setTimeout(() => setInternalBackupMessage(null), 6000);
           return;
+        } catch (nativeErr) {
+          console.warn('Filesystem Data directory write failed, falling back to download:', nativeErr);
         }
       }
 
-      // Browser fallback
+      // Standard reliable Blob download fallback
       const blob = new Blob([content], { type: mime });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -1409,11 +1407,12 @@ export default function App() {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      setInternalBackupMessage(`Download do backup (${scope.toUpperCase()}) iniciado no navegador:\n${fileName}`);
+
+      setInternalBackupMessage(`Sucesso! Backup (${scope.toUpperCase()}) baixado:\n${fileName}`);
       setTimeout(() => setInternalBackupMessage(null), 6000);
     } catch (e: any) {
       console.error('Erro ao exportar backup interno:', e);
-      setInternalBackupMessage('Erro ao salvar backup na memória interna.');
+      setInternalBackupMessage('Erro ao gerar arquivo de backup.');
       setTimeout(() => setInternalBackupMessage(null), 6000);
     }
   };
