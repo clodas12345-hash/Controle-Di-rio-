@@ -25,6 +25,8 @@ import {
   TrendingUp,
   FileText
 } from 'lucide-react';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
 import { GkdMobilityLogo } from './GkdMobilityLogo';
 import { getApiUrl, isMobileOrNativeApp } from '../lib/api';
 import { DEFAULT_DAILY_LOGS, DEFAULT_FIXED_EXPENSES_BY_MONTH, DEFAULT_CAR_PROFILE } from '../defaultBackupData';
@@ -413,23 +415,78 @@ export function BackupModal({
 
     const { content, type, extension } = getPreparedContent();
     const fileName = getExportFileName(extension);
-    const mime = extension === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json;charset=utf-8;';
+    
+    // Ajuste do MIME type para evitar rejeição do sistema operacional
+    const mime = extension === 'csv' ? 'text/csv' : 'application/json';
 
-    // 1. Tentar Web Share (Prioridade para Mobile)
-    if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare) {
+    // 1. Tentar Capacitor Native (Filesystem Cache + Share) - Ideal para APK Android/iOS
+    // Correção: Verificação robusta de segurança para checar se as variáveis globais realmente existem
+    const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
+    
+    if (isCapacitorNative && typeof Filesystem !== 'undefined' && typeof Share !== 'undefined') {
       try {
-        const file = new File([content], fileName, { type: mime });
-        if (navigator.canShare({ files: [file] })) {
-          await navigator.share({ files: [file], title: 'Backup', text: 'Backup' });
-          setDownloadSuccess(true);
-          return;
+        console.log('Tentando fluxo nativo Capacitor...');
+        
+        // Grava o arquivo no Cache do aplicativo
+        await Filesystem.writeFile({
+          path: fileName,
+          data: content,
+          directory: Directory.Cache,
+          encoding: Encoding.UTF8
+        });
+
+        // Recupera a URI correta
+        const uriResult = await Filesystem.getUri({
+          path: fileName,
+          directory: Directory.Cache
+        });
+
+        // Compartilha usando a URI nativa
+        await Share.share({
+          title: 'Backup GKD Controle Diário',
+          text: `Arquivo de backup gerado: ${fileName}`,
+          url: uriResult.uri, // Garante que o caminho file:// vá correto
+          dialogTitle: 'Salvar ou Compartilhar Arquivo de Backup'
+        });
+
+        setDownloadSuccess(true);
+        if (typeof setSuccessMessage === 'function') {
+          setSuccessMessage(`Arquivo pronto para salvar: ${fileName}`);
         }
-      } catch (e) { console.warn('WebShare falhou', e); }
+        return;
+      } catch (nativeErr: any) {
+        console.error('Falha no fluxo Capacitor nativo, tentando alternativas:', nativeErr);
+        // Não interrompe, deixa o código tentar o próximo método (Web Share ou link)
+      }
     }
 
-    // 2. Tentar Download Tradicional
+    // 2. Tentar Web Share API (Geralmente funciona em browsers mobile como Safari/Chrome)
+    if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare) {
+      try {
+        // Importante: Tirar o ";charset=utf-8" de dentro do objeto File para não quebrar no mobile
+        const file = new File([content], fileName, { type: mime });
+        
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ 
+            files: [file], 
+            title: 'Backup GKD', 
+            text: 'Arquivo de Backup' 
+          });
+          setDownloadSuccess(true);
+          if (typeof setSuccessMessage === 'function') {
+            setSuccessMessage('Compartilhamento aberto com sucesso!');
+          }
+          return;
+        }
+      } catch (e) { 
+        console.warn('WebShare falhou ou foi cancelado pelo usuário', e); 
+      }
+    }
+
+    // 3. Tentar Download Tradicional (Fallback apenas para Computador/Navegador Web)
     try {
-      const blob = new Blob([content], { type: mime });
+      console.log('Tentando download tradicional via link...');
+      const blob = new Blob([content], { type: `${mime};charset=utf-8;` });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -439,22 +496,15 @@ export function BackupModal({
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
+      
       setDownloadSuccess(true);
-      setSuccessMessage('Download iniciado!');
+      if (typeof setSuccessMessage === 'function') {
+        setSuccessMessage('Download iniciado!');
+      }
       return;
     } catch (e) {
-      console.warn('Download via link falhou, tentando window.open', e);
-    }
-
-    // 3. Fallback: Abrir em nova janela/aba (Garante visualização para salvar manualmente no Android)
-    try {
-      const blob = new Blob([content], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
-      window.open(url, '_blank');
-      setDownloadSuccess(true);
-      setSuccessMessage('Backup aberto em nova janela. Salve manualmente.');
-    } catch (e) {
-      alert('Não foi possível realizar o download. Tente copiar o texto.');
+      console.error('Download via link falhou completamente', e);
+      alert('Não foi possível realizar o download automático neste dispositivo.');
     }
   };
 
