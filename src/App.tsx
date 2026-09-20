@@ -1305,18 +1305,77 @@ export default function App() {
   const fixedExpenseInputRef = React.useRef<HTMLInputElement | null>(null);
   const internalFileInputRef = useRef<HTMLInputElement>(null);
   const [internalBackupMessage, setInternalBackupMessage] = useState<string | null>(null);
+  const [exportScope, setExportScope] = useState<'all' | 'year' | 'month' | 'week'>('all');
 
-  const handleInternalExport = async () => {
+  const handleInternalExport = async (scopeOverride?: 'all' | 'year' | 'month' | 'week') => {
     try {
+      const scope = scopeOverride || exportScope;
+      const now = new Date();
+      const day = String(now.getDate()).padStart(2, '0');
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const year = now.getFullYear();
+      const dateStr = `${day}-${month}-${year}`;
+      const fileName = `Backup_Controle_Diario_${dateStr}.json`;
+
+      let filteredLogs = logs;
+      let filteredFixedExpenses = fixedExpensesByMonth;
+
+      if (scope === 'year') {
+        filteredLogs = logs.filter(l => l.date.startsWith(`${selectedYear}-`));
+        const filteredFixed: Record<string, any> = {};
+        Object.keys(fixedExpensesByMonth).forEach(k => {
+          if (k.startsWith(`${selectedYear}-`)) {
+            filteredFixed[k] = fixedExpensesByMonth[k];
+          }
+        });
+        filteredFixedExpenses = filteredFixed;
+      } else if (scope === 'month') {
+        const mKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
+        filteredLogs = logs.filter(l => l.date.startsWith(mKey));
+        filteredFixedExpenses = {
+          [mKey]: fixedExpensesByMonth[mKey] || []
+        };
+      } else if (scope === 'week') {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const targetDate = logs.find(l => l.date === todayStr) ? new Date() : new Date(selectedYear, selectedMonth - 1, 15);
+        const firstDayOfWeek = new Date(targetDate);
+        firstDayOfWeek.setDate(targetDate.getDate() - targetDate.getDay());
+        const lastDayOfWeek = new Date(firstDayOfWeek);
+        lastDayOfWeek.setDate(firstDayOfWeek.getDate() + 6);
+
+        const startStr = firstDayOfWeek.toISOString().slice(0, 10);
+        const endStr = lastDayOfWeek.toISOString().slice(0, 10);
+
+        filteredLogs = logs.filter(l => l.date >= startStr && l.date <= endStr);
+        const mKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
+        filteredFixedExpenses = {
+          [mKey]: fixedExpensesByMonth[mKey] || []
+        };
+      }
+
+      const allLocalStorageData: Record<string, string> = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key) {
+          const val = localStorage.getItem(key);
+          if (val !== null) {
+            allLocalStorageData[key] = val;
+          }
+        }
+      }
+
       const backupData = {
         versaoBackup: '2.0',
-        exportDate: new Date().toISOString(),
-        dailyLogs: logs,
-        fixedExpensesByMonth,
-        carProfile
+        appName: 'GKD Controle Diário',
+        exportScope: scope,
+        exportDate: now.toISOString(),
+        dailyLogs: filteredLogs,
+        fixedExpensesByMonth: filteredFixedExpenses,
+        carProfile,
+        localStorageSnapshot: allLocalStorageData
       };
+
       const content = JSON.stringify(backupData, null, 2);
-      const fileName = `Backup_GKD_${new Date().toISOString().slice(0, 10)}.json`;
       const mime = 'application/json;charset=utf-8;';
 
       const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
@@ -1332,7 +1391,7 @@ export default function App() {
             directory: Directory.Documents,
             encoding: Encoding.UTF8
           });
-          setInternalBackupMessage(`Sucesso! Backup salvo na pasta de Documentos do celular: ${fileName}`);
+          setInternalBackupMessage(`Sucesso! Backup (${scope.toUpperCase()}) salvo na pasta de Documentos:\n${fileName}`);
           setTimeout(() => setInternalBackupMessage(null), 6000);
           return;
         }
@@ -1349,7 +1408,7 @@ export default function App() {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      setInternalBackupMessage(`Download do backup iniciado no navegador: ${fileName}`);
+      setInternalBackupMessage(`Download do backup (${scope.toUpperCase()}) iniciado no navegador:\n${fileName}`);
       setTimeout(() => setInternalBackupMessage(null), 6000);
     } catch (e: any) {
       console.error('Erro ao exportar backup interno:', e);
@@ -1368,27 +1427,41 @@ export default function App() {
         const text = event.target?.result as string;
         const parsed = JSON.parse(text);
 
-        if (parsed && (Array.isArray(parsed.dailyLogs) || typeof parsed.fixedExpensesByMonth === 'object' || Array.isArray(parsed))) {
-          const importedLogs = Array.isArray(parsed) ? parsed : (parsed.dailyLogs || logs);
-          const importedFixed = parsed.fixedExpensesByMonth || fixedExpensesByMonth;
-          const importedProfile = parsed.carProfile || carProfile;
+        if (parsed && (Array.isArray(parsed.dailyLogs) || typeof parsed.fixedExpensesByMonth === 'object' || parsed.localStorageSnapshot || Array.isArray(parsed))) {
+          if (parsed.localStorageSnapshot && typeof parsed.localStorageSnapshot === 'object') {
+            for (const [k, v] of Object.entries(parsed.localStorageSnapshot)) {
+              if (typeof v === 'string') {
+                localStorage.setItem(k, v);
+              }
+            }
+          }
 
-          if (Array.isArray(importedLogs) && importedLogs.length > 0) {
+          const importedLogs = Array.isArray(parsed) ? parsed : (parsed.dailyLogs || null);
+          const importedFixed = parsed.fixedExpensesByMonth || null;
+          const importedProfile = parsed.carProfile || null;
+
+          if (importedLogs && Array.isArray(importedLogs) && importedLogs.length > 0) {
             setLogs(importedLogs);
             localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(importedLogs));
           }
+
           if (importedFixed && typeof importedFixed === 'object') {
             setFixedExpensesByMonth(importedFixed);
             localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify(importedFixed));
           }
+
           if (importedProfile && typeof importedProfile === 'object' && importedProfile.modelName) {
             setCarProfile(importedProfile);
             localStorage.setItem('driver_car_profile_v2', JSON.stringify(importedProfile));
           }
 
-          setInternalBackupMessage('Backup importado e restaurado com sucesso da memória interna!');
+          setInternalBackupMessage('Backup completo importado e restaurado com sucesso! Atualizando sistema...');
           setTimeout(() => setInternalBackupMessage(null), 6000);
           setIsHelpModalOpen(false);
+
+          setTimeout(() => {
+            window.location.reload();
+          }, 1500);
         } else {
           setInternalBackupMessage('Arquivo de backup inválido ou formato incompatível.');
           setTimeout(() => setInternalBackupMessage(null), 6000);
@@ -7504,17 +7577,43 @@ export default function App() {
                       </button>
 
                       {/* EXPORTAR BACKUP MEMÓRIA INTERNA */}
+                      <div className="col-span-1 sm:col-span-2 p-3 bg-zinc-900/80 border border-zinc-800 rounded-xl space-y-2">
+                        <span className="text-[11px] font-bold text-zinc-300 uppercase tracking-wider block">
+                          Período do Backup:
+                        </span>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {(['all', 'week', 'month', 'year'] as const).map((s) => {
+                            const labels = { all: 'Tudo', week: 'Semana', month: 'Mês', year: 'Ano' };
+                            const isActive = exportScope === s;
+                            return (
+                              <button
+                                key={s}
+                                type="button"
+                                onClick={() => setExportScope(s)}
+                                className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all ${
+                                  isActive
+                                    ? 'bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/20'
+                                    : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                                }`}
+                              >
+                                {labels[s]}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
                       <button
                         type="button"
-                        onClick={handleInternalExport}
+                        onClick={() => handleInternalExport()}
                         className="p-3 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 hover:border-emerald-500/60 rounded-xl flex items-center gap-3 text-left transition-all cursor-pointer group"
                       >
                         <div className="p-2 bg-emerald-500 text-zinc-950 rounded-lg group-hover:scale-110 transition-transform">
                           <Upload className="w-4 h-4 rotate-180 stroke-[2.5]" />
                         </div>
                         <div>
-                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Exportar Backup (Memória Interna)</span>
-                          <span className="text-[11px] text-zinc-400">Salvar histórico JSON na memória do celular</span>
+                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Exportar Backup ({exportScope === 'all' ? 'Tudo' : exportScope === 'year' ? 'Ano' : exportScope === 'month' ? 'Mês' : 'Semana'})</span>
+                          <span className="text-[11px] text-zinc-400">Salvar Backup_Controle_Diario_DD-MM-AAAA.json</span>
                         </div>
                       </button>
 
