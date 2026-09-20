@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { getApiUrl, fetchApi } from './lib/api';
 import { ExcelImportModal } from './components/ExcelImportModal';
-import { BackupModal } from './components/BackupModal';
 import { PermissionsModal } from './components/PermissionsModal';
 import { TollCalculator } from './components/TollCalculator';
 import { GkdMobilityLogo } from './components/GkdMobilityLogo';
@@ -10,6 +9,7 @@ import { DeepSweepModal, DeepSweepReport } from './components/DeepSweepModal';
 import { MultimodalAiModal } from './components/MultimodalAiModal';
 import { ConflictResolverModal, ConflictData } from './components/ConflictResolverModal';
 import { requestNotificationPermission, sendAppNotification } from './services/notificationService';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { 
   Car, 
   Gauge,
@@ -1284,7 +1284,6 @@ export default function App() {
   const [isKpisModalOpen, setIsKpisModalOpen] = useState(false);
   const [isEfficiencyModalOpen, setIsEfficiencyModalOpen] = useState(false);
   const [isAppShareModalOpen, setIsAppShareModalOpen] = useState(false);
-  const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const [isPermissionsModalOpen, setIsPermissionsModalOpen] = useState(() => {
     try {
       return localStorage.getItem('gkd_permissions_prompted_v1') !== 'true';
@@ -1304,6 +1303,105 @@ export default function App() {
 
   const fixedExpenseFormRef = React.useRef<HTMLFormElement | null>(null);
   const fixedExpenseInputRef = React.useRef<HTMLInputElement | null>(null);
+  const internalFileInputRef = useRef<HTMLInputElement>(null);
+  const [internalBackupMessage, setInternalBackupMessage] = useState<string | null>(null);
+
+  const handleInternalExport = async () => {
+    try {
+      const backupData = {
+        versaoBackup: '2.0',
+        exportDate: new Date().toISOString(),
+        dailyLogs: logs,
+        fixedExpensesByMonth,
+        carProfile
+      };
+      const content = JSON.stringify(backupData, null, 2);
+      const fileName = `Backup_GKD_${new Date().toISOString().slice(0, 10)}.json`;
+      const mime = 'application/json;charset=utf-8;';
+
+      const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
+      if (isCapacitorNative && typeof Filesystem !== 'undefined') {
+        let status = await Filesystem.checkPermissions();
+        if (status.publicStorage !== 'granted') {
+          status = await Filesystem.requestPermissions();
+        }
+        if (status.publicStorage === 'granted') {
+          await Filesystem.writeFile({
+            path: fileName,
+            data: content,
+            directory: Directory.Documents,
+            encoding: Encoding.UTF8
+          });
+          setInternalBackupMessage(`Sucesso! Backup salvo na pasta de Documentos do celular: ${fileName}`);
+          setTimeout(() => setInternalBackupMessage(null), 6000);
+          return;
+        }
+      }
+
+      // Browser fallback
+      const blob = new Blob([content], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', fileName);
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setInternalBackupMessage(`Download do backup iniciado no navegador: ${fileName}`);
+      setTimeout(() => setInternalBackupMessage(null), 6000);
+    } catch (e: any) {
+      console.error('Erro ao exportar backup interno:', e);
+      setInternalBackupMessage('Erro ao salvar backup na memória interna.');
+      setTimeout(() => setInternalBackupMessage(null), 6000);
+    }
+  };
+
+  const handleInternalImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const text = event.target?.result as string;
+        const parsed = JSON.parse(text);
+
+        if (parsed && (Array.isArray(parsed.dailyLogs) || typeof parsed.fixedExpensesByMonth === 'object' || Array.isArray(parsed))) {
+          const importedLogs = Array.isArray(parsed) ? parsed : (parsed.dailyLogs || logs);
+          const importedFixed = parsed.fixedExpensesByMonth || fixedExpensesByMonth;
+          const importedProfile = parsed.carProfile || carProfile;
+
+          if (Array.isArray(importedLogs) && importedLogs.length > 0) {
+            setLogs(importedLogs);
+            localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(importedLogs));
+          }
+          if (importedFixed && typeof importedFixed === 'object') {
+            setFixedExpensesByMonth(importedFixed);
+            localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify(importedFixed));
+          }
+          if (importedProfile && typeof importedProfile === 'object' && importedProfile.modelName) {
+            setCarProfile(importedProfile);
+            localStorage.setItem('driver_car_profile_v2', JSON.stringify(importedProfile));
+          }
+
+          setInternalBackupMessage('Backup importado e restaurado com sucesso da memória interna!');
+          setTimeout(() => setInternalBackupMessage(null), 6000);
+          setIsHelpModalOpen(false);
+        } else {
+          setInternalBackupMessage('Arquivo de backup inválido ou formato incompatível.');
+          setTimeout(() => setInternalBackupMessage(null), 6000);
+        }
+      } catch (err: any) {
+        console.error('Erro ao importar backup interno:', err);
+        setInternalBackupMessage('Erro ao ler o arquivo JSON de backup.');
+        setTimeout(() => setInternalBackupMessage(null), 6000);
+      }
+      if (e.target) e.target.value = '';
+    };
+    reader.readAsText(file);
+  };
 
   // Auto-hide bottom navigation dock during inputs / editing / modal filling
   const [isInputActive, setIsInputActive] = useState(false);
@@ -5491,7 +5589,7 @@ export default function App() {
       <nav 
         id="bottom-dock-nav" 
         className={`fixed bottom-0 left-0 right-0 z-40 bg-[#090b10]/95 backdrop-blur-xl border-t border-zinc-800/90 shadow-[0_-15px_40px_rgba(0,0,0,0.9)] pb-[calc(env(safe-area-inset-bottom)+14px)] pt-3 px-2 transition-all duration-300 ease-in-out ${
-          (isInputActive || isAddingFixed || isModalOpen || isCarModalOpen || isKpisModalOpen || isEfficiencyModalOpen || isAppShareModalOpen || isBackupModalOpen || isExcelImportOpen || isMultimodalAiOpen || isAssistantOpen || isDatePickerModalOpen || isHelpModalOpen || isBottomDockCollapsed)
+          (isInputActive || isAddingFixed || isModalOpen || isCarModalOpen || isKpisModalOpen || isEfficiencyModalOpen || isAppShareModalOpen || isExcelImportOpen || isMultimodalAiOpen || isAssistantOpen || isDatePickerModalOpen || isHelpModalOpen || isBottomDockCollapsed)
             ? 'translate-y-full opacity-0 pointer-events-none invisible' 
             : 'translate-y-0 opacity-100 visible'
         }`}
@@ -7351,24 +7449,6 @@ export default function App() {
                       Ações Rápidas & Configurações:
                     </span>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      {/* CENTRAL DE BACKUP & IMPORTAÇÃO */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsHelpModalOpen(false);
-                          setIsBackupModalOpen(true);
-                        }}
-                        className="p-3 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 hover:border-emerald-500/60 rounded-xl flex items-center gap-3 text-left transition-all cursor-pointer group"
-                      >
-                        <div className="p-2 bg-emerald-500 text-zinc-950 rounded-lg group-hover:scale-110 transition-transform">
-                          <FileSpreadsheet className="w-4 h-4 stroke-[2.5]" />
-                        </div>
-                        <div>
-                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Backup & Importação</span>
-                          <span className="text-[11px] text-zinc-400">Exportar relatórios (Excel/JSON/WhatsApp) ou Restaurar dados</span>
-                        </div>
-                      </button>
-
                       {/* NOVO REGISTRO */}
                       <button
                         type="button"
@@ -7422,6 +7502,50 @@ export default function App() {
                           <span className="text-[11px] text-zinc-400">Estimativas de faturamento e lucro do ano</span>
                         </div>
                       </button>
+
+                      {/* EXPORTAR BACKUP MEMÓRIA INTERNA */}
+                      <button
+                        type="button"
+                        onClick={handleInternalExport}
+                        className="p-3 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 hover:border-emerald-500/60 rounded-xl flex items-center gap-3 text-left transition-all cursor-pointer group"
+                      >
+                        <div className="p-2 bg-emerald-500 text-zinc-950 rounded-lg group-hover:scale-110 transition-transform">
+                          <Upload className="w-4 h-4 rotate-180 stroke-[2.5]" />
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Exportar Backup (Memória Interna)</span>
+                          <span className="text-[11px] text-zinc-400">Salvar histórico JSON na memória do celular</span>
+                        </div>
+                      </button>
+
+                      {/* IMPORTAR BACKUP MEMÓRIA INTERNA */}
+                      <button
+                        type="button"
+                        onClick={() => internalFileInputRef.current?.click()}
+                        className="p-3 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 hover:border-emerald-500/60 rounded-xl flex items-center gap-3 text-left transition-all cursor-pointer group"
+                      >
+                        <div className="p-2 bg-emerald-500 text-zinc-950 rounded-lg group-hover:scale-110 transition-transform">
+                          <Upload className="w-4 h-4 stroke-[2.5]" />
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Importar Backup (Memória Interna)</span>
+                          <span className="text-[11px] text-zinc-400">Restaurar dados de arquivo JSON (.json)</span>
+                        </div>
+                      </button>
+                      <input 
+                        type="file" 
+                        ref={internalFileInputRef} 
+                        onChange={handleInternalImportFile} 
+                        accept=".json" 
+                        className="hidden" 
+                      />
+
+                      {internalBackupMessage && (
+                        <div className="col-span-1 sm:col-span-2 p-3 bg-emerald-500/15 border border-emerald-500/40 rounded-xl text-xs text-emerald-200 font-semibold flex items-center gap-2 animate-fade-in">
+                          <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                          <span>{internalBackupMessage}</span>
+                        </div>
+                      )}
 
                       {/* FALE CONOSCO (WHATSAPP) */}
                       <button
@@ -8965,27 +9089,6 @@ export default function App() {
               </div>
             </div>
 
-            <div className="p-3.5 bg-zinc-950/80 rounded-xl border border-zinc-800 space-y-2">
-              <p className="text-xs text-zinc-300 leading-relaxed font-bold flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 text-amber-500" />
-                Deseja fazer um backup antes?
-              </p>
-              <p className="text-[11px] text-zinc-400 leading-relaxed">
-                Você pode exportar seus dados por dia, semana, mês ou tudo para não perder seu histórico.
-              </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsConfirmClearAllModalOpen(false);
-                  setIsBackupModalOpen(true);
-                }}
-                className="w-full mt-2 py-2.5 px-4 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5" />
-                Fazer Backup do Histórico (Excel)
-              </button>
-            </div>
-
             <div className="p-3.5 bg-red-500/5 rounded-xl border border-red-500/10 space-y-2">
               <p className="text-xs text-zinc-300 leading-relaxed font-semibold">
                 Tem certeza que deseja apagar todos os dados?
@@ -9015,24 +9118,6 @@ export default function App() {
           </div>
         </div>
       )}
-
-      {/* CENTRAL DE BACKUP COMPLETA */}
-      <BackupModal
-        isOpen={isBackupModalOpen}
-        onClose={() => setIsBackupModalOpen(false)}
-        onBack={() => {
-          setIsBackupModalOpen(false);
-          setIsHelpModalOpen(true);
-        }}
-        onOpenImport={() => {
-          setIsBackupModalOpen(false);
-          setIsExcelImportOpen(true);
-        }}
-        onImportData={handleExcelImport}
-        logs={logs}
-        carProfile={carProfile}
-        fixedExpensesByMonth={fixedExpensesByMonth}
-      />
 
       {/* MODAL DE SOLICITAÇÃO INICIAL DE PERMISSÕES */}
       <PermissionsModal
