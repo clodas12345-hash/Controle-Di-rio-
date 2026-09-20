@@ -73,6 +73,7 @@ export function BackupModal({
   const [copied, setCopied] = useState(false);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [customAlert, setCustomAlert] = useState<string | null>(null);
 
   // Estados de Importação
   const [importTab, setImportTab] = useState<'file' | 'paste'>('file');
@@ -409,35 +410,52 @@ export function BackupModal({
   const handleDownload = async () => {
     console.log('handleDownload: Iniciando');
     if (!hasData) {
-      alert("Nenhum dado encontrado no período selecionado.");
+      setCustomAlert("Nenhum dado encontrado no período selecionado.");
       return;
     }
 
     const { content, type, extension } = getPreparedContent();
     const fileName = getExportFileName(extension);
-    const mime = extension === 'csv' ? 'text/csv' : 'application/json';
+    const mime = extension === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json;charset=utf-8;';
 
-    // 1. Forçar fluxo via Web Share / Capacitor Share para permitir salvar na pasta Downloads pública
-    if (typeof navigator !== 'undefined' && navigator.share) {
+    // 1. Fluxo Nativo do Capacitor com Solicitação de Permissão
+    const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
+    if (isCapacitorNative && typeof Filesystem !== 'undefined') {
       try {
-        const file = new File([content], fileName, { type: mime });
-        if (navigator.canShare && navigator.canShare({ files: [file] })) {
-          await navigator.share({ 
-            files: [file], 
-            title: 'Salvar Backup', 
-            text: 'Selecione "Salvar em Arquivos" ou escolha uma pasta para baixar o backup.' 
-          });
-          setDownloadSuccess(true);
-          return;
+        console.log('Verificando permissões de armazenamento nativas...');
+        
+        // Checa se o aplicativo já tem permissão de escrita
+        let status = await Filesystem.checkPermissions();
+        if (status.publicStorage !== 'granted') {
+          status = await Filesystem.requestPermissions();
         }
-      } catch (e) { 
-        console.warn('WebShare falhou, tentando método tradicional...', e); 
+
+        if (status.publicStorage === 'granted') {
+          // Grava o arquivo na pasta de Documentos pública e visível do celular
+          await Filesystem.writeFile({
+            path: fileName,
+            data: content,
+            directory: Directory.Documents,
+            encoding: Encoding.UTF8
+          });
+
+          setCustomAlert(`Sucesso! O arquivo foi baixado na pasta de Documentos do seu celular.\nNome: ${fileName}`);
+          setDownloadSuccess(true);
+          if (typeof setSuccessMessage === 'function') {
+            setSuccessMessage(`Salvo em Documentos: ${fileName}`);
+          }
+          return;
+        } else {
+          console.warn('Permissão de armazenamento negada pelo usuário.');
+        }
+      } catch (nativeErr: any) {
+        console.error('Erro no fluxo nativo do Filesystem:', nativeErr);
       }
     }
 
-    // 2. Download Tradicional (Fallback apenas para Computador/Navegador Web)
+    // 2. Fallback Tradicional (Apenas para Computador/Navegador Web comum)
     try {
-      const blob = new Blob([content], { type: `${mime};charset=utf-8;` });
+      const blob = new Blob([content], { type: mime });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -448,10 +466,13 @@ export function BackupModal({
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
       setDownloadSuccess(true);
+      if (typeof setSuccessMessage === 'function') {
+        setSuccessMessage('Download iniciado!');
+      }
       return;
     } catch (e) {
-      console.error('Falha geral no download', e);
-      alert('Não foi possível salvar o arquivo neste dispositivo.');
+      console.warn('Download via link falhou', e);
+      setCustomAlert('Não foi possível realizar o download automático.');
     }
   };
 
@@ -482,7 +503,7 @@ export function BackupModal({
   // Enviar resumo direto no WhatsApp
   const handleOpenWhatsApp = () => {
     if (!hasData) {
-      alert("Nenhum lançamento ou despesa fixa no período selecionado.");
+      setCustomAlert("Nenhum lançamento ou despesa fixa no período selecionado.");
       return;
     }
     let totalBruto = 0, totalDesp = 0, totalUber = 0, total99 = 0, totalKm = 0;
@@ -1592,6 +1613,28 @@ export function BackupModal({
         </div>
 
       </div>
+
+      {/* Modern Custom Alert Modal */}
+      {customAlert && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fade-in">
+          <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-6 w-full max-w-sm text-center shadow-2xl animate-scale-up space-y-4">
+            <div className="w-12 h-12 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex items-center justify-center mx-auto text-emerald-400 shadow-inner">
+              <AlertCircle className="w-6 h-6" />
+            </div>
+            <div className="space-y-1.5">
+              <h4 className="text-sm font-bold text-zinc-100">Aviso do Sistema</h4>
+              <p className="text-xs text-zinc-300 leading-relaxed whitespace-pre-wrap">{customAlert}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCustomAlert(null)}
+              className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-all shadow-lg shadow-emerald-950/40 cursor-pointer active:scale-95"
+            >
+              Entendido
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
