@@ -1316,7 +1316,8 @@ export default function App() {
       const month = String(now.getMonth() + 1).padStart(2, '0');
       const year = now.getFullYear();
       const dateStr = `${day}-${month}-${year}`;
-      const fileName = `Backup_Controle_Diario_${dateStr}.json`;
+      const zipFileName = `Backup_Controle_Diario_${dateStr}.zip`;
+      const jsonFileName = `Backup_Controle_Diario_${dateStr}.json`;
 
       let filteredLogs = logs;
       let filteredFixedExpenses = fixedExpensesByMonth;
@@ -1377,42 +1378,44 @@ export default function App() {
       };
 
       const content = JSON.stringify(backupData, null, 2);
-      const mime = 'application/json;charset=utf-8;';
+      
+      const zip = new JSZip();
+      zip.file(jsonFileName, content);
 
       const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
       if (isCapacitorNative && typeof Filesystem !== 'undefined') {
         try {
+          const zipBase64 = await zip.generateAsync({ type: 'base64' });
           await Filesystem.writeFile({
-            path: fileName,
-            data: content,
-            directory: Directory.Data,
-            encoding: Encoding.UTF8
+            path: zipFileName,
+            data: zipBase64,
+            directory: Directory.Data
           });
-          setInternalBackupMessage(`Sucesso! Salvo na memória interna do celular:\n${fileName}`);
+          setInternalBackupMessage(`Sucesso! Salvo na memória interna:\n${zipFileName}`);
           setTimeout(() => setInternalBackupMessage(null), 6000);
           return;
         } catch (nativeErr) {
-          console.warn('Filesystem Data directory write failed, falling back to download:', nativeErr);
+          console.warn('Filesystem zip write failed, falling back to download:', nativeErr);
         }
       }
 
-      // Standard reliable Blob download fallback
-      const blob = new Blob([content], { type: mime });
-      const url = URL.createObjectURL(blob);
+      // Browser download as zip blob
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(zipBlob);
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', fileName);
+      link.setAttribute('download', zipFileName);
       link.style.display = 'none';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
 
-      setInternalBackupMessage(`Sucesso! Backup (${scope.toUpperCase()}) baixado:\n${fileName}`);
+      setInternalBackupMessage(`Sucesso! Backup ZIP (${scope.toUpperCase()}) baixado:\n${zipFileName}`);
       setTimeout(() => setInternalBackupMessage(null), 6000);
     } catch (e: any) {
       console.error('Erro ao exportar backup interno:', e);
-      setInternalBackupMessage('Erro ao gerar arquivo de backup.');
+      setInternalBackupMessage('Erro ao gerar arquivo ZIP de backup.');
       setTimeout(() => setInternalBackupMessage(null), 6000);
     }
   };
