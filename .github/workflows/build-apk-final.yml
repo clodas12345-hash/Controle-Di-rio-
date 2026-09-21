@@ -153,7 +153,7 @@ jobs:
 
           manifest = manifest.replace("<application", permissionsXml + "\n    <application");
           // Desativa o Backup Automático do Android para garantir que reinstalações comecem 100% limpas (sem restaurar dados anteriores do Google Drive)
-          manifest = manifest.replace(/android:allowBackup="true"/g, 'android:allowBackup="false"');
+          manifest = manifest.replace(/android:allowBackup="true"/g, `android:allowBackup="false"`);
           fs.writeFileSync(manifestPath, manifest, "utf8");
           console.log("✅ Todas as permissões foram injetadas no AndroidManifest.xml!");
           '
