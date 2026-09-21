@@ -607,23 +607,27 @@ function getInitialLogsAndPeriod(): { initialLogs: DailyLog[]; initialYear: numb
 
   let allStoredLogs: DailyLog[] = [];
   const cleanSaved = localStorage.getItem('driver_daily_tracker_logs_v_clean');
+  const isInitialized = localStorage.getItem('driver_app_initialized');
 
   if (cleanSaved) {
     try {
       const parsed = JSON.parse(cleanSaved);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        const hasEntries = parsed.some((l: DailyLog) => (l.kmRodado || 0) > 0 || (l.app99?.earnings || 0) > 0 || (l.appUber?.earnings || 0) > 0);
-        if (hasEntries) {
-          allStoredLogs = performCalendarSweep(parsed, currentDeviceYear);
-        }
+        allStoredLogs = performCalendarSweep(parsed, currentDeviceYear);
       }
     } catch (e) {
       // ignore
     }
   }
 
-  if (allStoredLogs.length === 0) {
+  // Se o app nunca foi inicializado e não temos logs salvos, carrega os dados demo/padrão
+  if (!isInitialized && allStoredLogs.length === 0) {
     allStoredLogs = DEFAULT_DAILY_LOGS.length > 0 ? performCalendarSweep(DEFAULT_DAILY_LOGS, 2026) : generateCleanEmptyYearLogs(2026);
+    localStorage.setItem('driver_app_initialized', 'true');
+    localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(allStoredLogs));
+  } else if (allStoredLogs.length === 0) {
+    // Se o usuário explicitamente apagou tudo, mantém o app completamente limpo/vazio
+    allStoredLogs = generateCleanEmptyYearLogs(currentDeviceYear);
   }
 
   // Find the most recent active month/year in logs
@@ -2226,16 +2230,24 @@ export default function App() {
     // Also clear any other keys that might be related to previous versions
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const k = localStorage.key(i);
-      if (k && (k.includes('driver_') || k.includes('tracker'))) {
+      if (k && k !== 'driver_app_initialized' && (k.includes('driver_') || k.includes('tracker'))) {
         localStorage.removeItem(k);
       }
     }
+
+    // Set initialized to true so it stays clean and doesn't re-populate demo data
+    localStorage.setItem('driver_app_initialized', 'true');
 
     // 2. Reset states to initial/clean values
     const cleanLogs = generateCleanEmptyYearLogs(selectedYear);
     setLogs(cleanLogs);
     setCarProfile(TRULY_BLANK_CAR_PROFILE);
     setFixedExpensesByMonth({});
+
+    // Write empty states directly and synchronously to prevent race conditions or blank state issues
+    localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(cleanLogs));
+    localStorage.setItem('driver_car_profile_v2', JSON.stringify(TRULY_BLANK_CAR_PROFILE));
+    localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify({}));
 
     setIsConfirmClearAllModalOpen(false);
     setIsHelpModalOpen(false);
