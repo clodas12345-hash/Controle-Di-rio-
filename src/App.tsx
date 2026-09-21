@@ -1782,8 +1782,9 @@ export default function App() {
 
   // Auto-propagation of fixed expenses when a new month is visited
   useEffect(() => {
-    const currentKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
-    const currentExpenses = fixedExpensesByMonth[currentKey];
+    const currentKeyPadded = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
+    const currentKeyUnpadded = `${selectedYear}-${selectedMonth}`;
+    const currentExpenses = fixedExpensesByMonth[currentKeyPadded] || fixedExpensesByMonth[currentKeyUnpadded];
 
     // Only auto-propagate if the month is strictly undefined (never visited/initialized)
     if (!currentExpenses || currentExpenses.length === 0) {
@@ -1854,12 +1855,12 @@ export default function App() {
 
         setFixedExpensesByMonth(prev => ({
           ...prev,
-          [currentKey]: monthExpenses
+          [currentKeyPadded]: monthExpenses
         }));
 
         // Recalculate daily rates for the current month logs
         const totalCost = monthExpenses.reduce((acc, curr) => acc + (curr.value || 0), 0);
-        const customDays = carProfile.customWorkDays?.[currentKey] || [];
+        const customDays = carProfile.customWorkDays?.[currentKeyPadded] || carProfile.customWorkDays?.[currentKeyUnpadded] || [];
         const { dailyRate } = getMonthWorkDaysAndRate(selectedYear, selectedMonth, totalCost, customDays);
 
         setLogs(prevLogs => prevLogs.map(log => {
@@ -1889,7 +1890,7 @@ export default function App() {
         // Mark as initialized with empty array if nothing found
         setFixedExpensesByMonth(prev => ({
           ...prev,
-          [currentKey]: []
+          [currentKeyPadded]: []
         }));
       }
     }
@@ -2447,11 +2448,12 @@ export default function App() {
     const dayOfWeek = dateObj.getDay(); // 0 = Domingo
     const isSunday = dayOfWeek === 0;
 
-    const monthKey = `${y}-${String(m).padStart(2, '0')}`;
-    const customDays = carProfile.customWorkDays?.[monthKey] || [];
+    const monthKeyPadded = `${y}-${String(m).padStart(2, '0')}`;
+    const monthKeyUnpadded = `${y}-${m}`;
+    const customDays = carProfile.customWorkDays?.[monthKeyPadded] || carProfile.customWorkDays?.[monthKeyUnpadded] || [];
     const isCustomWorkingDay = (customDays && customDays.length > 0) ? customDays.includes(d) : (new Date(y, m - 1, d).getDay() !== 0);
 
-    const mExpenses = fixedExpensesByMonth[monthKey] || [];
+    const mExpenses = fixedExpensesByMonth[monthKeyPadded] || fixedExpensesByMonth[monthKeyUnpadded] || [];
     const mTotal = mExpenses.reduce((acc, curr) => acc + (curr.value || 0), 0);
     const effectiveCost = carProfile.monthlyCarExpense || 0;
 
@@ -2611,8 +2613,9 @@ export default function App() {
   // Batch apply calculated daily rate to all working days of a specific month
   const handleApplyMonthlyCarRateToAllDays = (monthToApply: number, yearToApply: number, customMonthlyTotal?: number) => {
     // If customMonthlyTotal not passed, check if there are fixed expenses in that month
-    const mKey = `${yearToApply}-${monthToApply}`;
-    const monthExpenses = fixedExpensesByMonth[mKey] || [];
+    const mKeyPadded = `${yearToApply}-${String(monthToApply).padStart(2, '0')}`;
+    const mKeyUnpadded = `${yearToApply}-${monthToApply}`;
+    const monthExpenses = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
     const monthFixedSum = monthExpenses.reduce((sum, item) => sum + item.value, 0);
 
     const costToUse = (typeof customMonthlyTotal === 'number' && customMonthlyTotal >= 0)
@@ -3090,13 +3093,14 @@ export default function App() {
     const totalFixedExpenses = isAllYear 
       ? Array.from(new Set(filteredLogs.map(l => l.date.slice(0, 7)))).reduce((acc: number, monthStr: string) => {
           const [y, m] = monthStr.split('-').map(Number);
-          const mKey = `${y}-${m}`;
-          const mList = fixedExpensesByMonth[mKey] || [];
+          const mKeyPadded = `${y}-${String(m).padStart(2, '0')}`;
+          const mKeyUnpadded = `${y}-${m}`;
+          const mList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
           return acc + mList.reduce((sum, item) => sum + item.value, 0);
         }, 0)
       : fixedExpenses.reduce((sum, item) => sum + item.value, 0);
 
-    const effectiveFixedCosts = totalCarRental + totalFixedExpenses;
+    const effectiveFixedCosts = totalFixedExpenses > 0 ? totalFixedExpenses : totalCarRental;
     const totalCosts = totalVariableCosts + effectiveFixedCosts;
 
     // Total daily operational net (exact sum of all table row nets)
@@ -3284,11 +3288,19 @@ export default function App() {
           const foodExpensesSum = (Object.values(log.foodExpenses) as number[]).reduce((a, b) => a + b, 0);
           cost += log.custoEnergia + log.diariaCarro + carExpensesSum + foodExpensesSum;
         });
+        const mKeyPadded = `${selectedYear}-${String(mNum).padStart(2, '0')}`;
+        const mKeyUnpadded = `${selectedYear}-${mNum}`;
+        const mFixedList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
+        const mFixedSum = mFixedList.reduce((sum, item) => sum + item.value, 0);
+
+        const mTotalFixed = mFixedSum > 0 ? mFixedSum : mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0);
+        const mTotalCosts = (cost - mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0)) + mTotalFixed;
+
         return {
           name: MONTH_NAMES[i].slice(0, 3),
           Faturamento: gross,
-          Custos: cost,
-          Lucro: gross - cost
+          Custos: mTotalCosts,
+          Lucro: gross - mTotalCosts
         };
       });
     }
@@ -3331,12 +3343,19 @@ export default function App() {
       const opGross = monthLogs.reduce((acc, l) => acc + (l.appUber.earnings || 0) + (l.appUber.bonus || 0) + (l.app99.earnings || 0) + (l.app99.bonus || 0) + (l.appParticular.earnings || 0) + (l.recompensasExtra || 0), 0);
       const anjoTotal = monthLogs.reduce((acc, l) => acc + (l.outrasFontes || 0), 0);
       const gross = opGross + anjoTotal;
-      const varCosts = monthLogs.reduce((acc, l) => acc + (l.custoEnergia || 0) + (l.diariaCarro || 0) + (l.carExpenses.wash + l.carExpenses.toll + l.carExpenses.maintenance + l.carExpenses.parking + l.carExpenses.other) + (l.foodExpenses.lunch + l.foodExpenses.dinner + l.foodExpenses.snacks + l.foodExpenses.coffee), 0);
-      const mFixedList = fixedExpensesByMonth[`${selectedYear}-${monthNum}`] || [];
-      const fixedVal = mFixedList.reduce((acc, f) => acc + f.value, 0);
+      const mKeyPadded = `${selectedYear}-${String(monthNum).padStart(2, '0')}`;
+      const mKeyUnpadded = `${selectedYear}-${monthNum}`;
+      const mFixedList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
+      const mFixedSum = mFixedList.reduce((sum, item) => sum + item.value, 0);
+      
+      const mLogsDiariaSum = monthLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0);
+      const mEffectiveFixed = mFixedSum > 0 ? mFixedSum : mLogsDiariaSum;
+
+      const varCosts = monthLogs.reduce((acc, l) => acc + (l.custoEnergia || 0) + (l.carExpenses.wash + l.carExpenses.toll + l.carExpenses.maintenance + l.carExpenses.parking + l.carExpenses.other) + (l.foodExpenses.lunch + l.foodExpenses.dinner + l.foodExpenses.snacks + l.foodExpenses.coffee), 0);
+      
       const km = monthLogs.reduce((acc, l) => acc + (l.kmRodado || 0), 0);
       const rides = monthLogs.reduce((acc, l) => acc + (l.appUber.rides || 0) + (l.app99.rides || 0) + (l.appParticular.rides || 0), 0);
-      const workDays = monthLogs.filter(l => !l.isDayOff && ((l.kmRodado || 0) > 0 || (l.appUber.earnings || 0) > 0 || (l.app99.earnings || 0) > 0)).length;
+      const workDays = monthLogs.filter(l => !l.isOff && ((l.kmRodado || 0) > 0 || (l.appUber.earnings || 0) > 0 || (l.app99.earnings || 0) > 0)).length;
 
       return {
         monthNum,
@@ -3346,8 +3365,8 @@ export default function App() {
         opGross,
         anjoTotal,
         varCosts,
-        fixedVal,
-        net: gross - varCosts - fixedVal,
+        fixedVal: mEffectiveFixed,
+        net: gross - varCosts - mEffectiveFixed,
         km,
         rides,
         workDays
@@ -4249,7 +4268,16 @@ export default function App() {
                         const dayFoodExp = (Object.values(l.foodExpenses) as number[]).reduce((a, b) => a + b, 0);
                         mCosts += l.custoEnergia + l.diariaCarro + dayCarExp + dayFoodExp;
                       });
-                      const mNet = mGross - mCosts;
+
+                      const mKeyPadded = `${selectedYear}-${String(mNum).padStart(2, '0')}`;
+                      const mKeyUnpadded = `${selectedYear}-${mNum}`;
+                      const mFixedList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
+                      const mFixedSum = mFixedList.reduce((sum, item) => sum + item.value, 0);
+
+                      const mLogsDiariaSum = mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0);
+                      const mEffectiveFixed = mFixedSum > 0 ? mFixedSum : mLogsDiariaSum;
+                      const mTotalCosts = (mCosts - mLogsDiariaSum) + mEffectiveFixed;
+                      const mNet = mGross - mTotalCosts;
 
                       return (
                         <div 
@@ -4271,7 +4299,7 @@ export default function App() {
                             </div>
                             <div className="flex justify-between text-zinc-300">
                               <span className="text-zinc-500 text-[10px] font-sans">Custos Ops:</span>
-                              <span className="text-amber-400">{formatBRL(mCosts)}</span>
+                              <span className="text-amber-400">{formatBRL(mTotalCosts)}</span>
                             </div>
                             <div className="flex justify-between border-t border-zinc-850 pt-1 text-[11px] font-bold">
                               <span className="text-zinc-400 text-[10px] font-sans">Lucro:</span>
@@ -4610,7 +4638,9 @@ export default function App() {
                           <span className="text-zinc-200 font-bold">{formatBRL(totalEnergyCost)}</span>
                         </div>
                         <div className="bg-zinc-950/60 border border-zinc-850 p-2.5 rounded-xl space-y-0.5">
-                          <span className="text-[9px] text-zinc-500 block font-sans">DIÁRIAS DO CARRO</span>
+                          <span className="text-[9px] text-zinc-500 block font-sans">
+                            {carProfile.tipoPropriedade === 'alugado' ? 'DIÁRIAS DO CARRO' : 'DIÁRIAS (VIRTUAL)'}
+                          </span>
                           <span className="text-zinc-200 font-bold">{formatBRL(totalCarRental)}</span>
                         </div>
                         <div className="bg-zinc-950/60 border border-zinc-850 p-2.5 rounded-xl space-y-0.5">
@@ -5691,12 +5721,21 @@ export default function App() {
                 <span className="font-mono font-bold text-zinc-200">{formatBRL(totalEnergyCost)}</span>
               </div>
 
-              <div className="flex items-center justify-between p-2 bg-zinc-950/60 rounded-xl border border-zinc-850">
-                <span className="text-zinc-300 flex items-center gap-2">
-                  <Car className="w-3.5 h-3.5 text-blue-400" /> Diária / Aluguel do Carro
-                </span>
-                <span className="font-mono font-bold text-zinc-200">{formatBRL(totalCarRental)}</span>
-              </div>
+              {carProfile.tipoPropriedade === 'alugado' ? (
+                <div className="flex items-center justify-between p-2 bg-zinc-950/60 rounded-xl border border-zinc-850">
+                  <span className="text-zinc-300 flex items-center gap-2">
+                    <Car className="w-3.5 h-3.5 text-blue-400" /> Diária / Aluguel do Carro
+                  </span>
+                  <span className="font-mono font-bold text-zinc-200">{formatBRL(totalCarRental)}</span>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between p-2 bg-zinc-950/40 rounded-xl border border-zinc-900 opacity-60">
+                  <span className="text-zinc-400 flex items-center gap-2">
+                    <Car className="w-3.5 h-3.5 text-zinc-500" /> Diária do Carro (Virtual)
+                  </span>
+                  <span className="font-mono font-medium text-zinc-500 text-[10px]" title="Já incluso no total de Despesas Fixas abaixo">Incluso nas Contas</span>
+                </div>
+              )}
 
               <div className="flex items-center justify-between p-2 bg-zinc-950/60 rounded-xl border border-zinc-850">
                 <span className="text-zinc-300 flex items-center gap-2">
