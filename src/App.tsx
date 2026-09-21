@@ -1631,6 +1631,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if ((window as any).isClearingAll) return;
     if (logs) {
       localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(logs));
     }
@@ -1740,6 +1741,7 @@ export default function App() {
   }, [carProfile.vehicleType, carProfile.kwhCostRate, carProfile.batteryCapacityKwh, carProfile.estimatedAutonomyKm, logs]);
 
   useEffect(() => {
+    if ((window as any).isClearingAll) return;
     localStorage.setItem('driver_car_profile_v2', JSON.stringify(carProfile));
   }, [carProfile]);
 
@@ -1773,6 +1775,7 @@ export default function App() {
   }, [carProfile.nextMaintenanceKm, logs]);
 
   useEffect(() => {
+    if ((window as any).isClearingAll) return;
     const sanitized = sanitizeFixedExpensesMap(fixedExpensesByMonth);
     localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify(sanitized));
   }, [fixedExpensesByMonth]);
@@ -2215,6 +2218,9 @@ export default function App() {
   // (Automatic override of monthlyCarExpense by fixed expenses removed per user request)
 
   const handleClearAllData = async () => {
+    // Bloqueia qualquer auto-save assíncrono do React que tente reescrever os dados antigos de volta no localStorage
+    (window as any).isClearingAll = true;
+
     // 1. Limpa absolutamente todo o localStorage do aplicativo
     localStorage.clear();
 
@@ -2239,7 +2245,7 @@ export default function App() {
     // Força a sincronização do banco de dados do WebView no Android recarregando a página
     setTimeout(() => {
       window.location.reload();
-    }, 300);
+    }, 150);
   };
 
   const handleDeepSweep = async () => {
