@@ -596,13 +596,92 @@ const performCalendarSweep = (currentLogs: DailyLog[], targetYear: number): Dail
   return Array.from(logsMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 };
 
+let initialLogsData: { initialLogs: DailyLog[]; initialYear: number; initialMonth: number } | null = null;
+
+function getInitialLogsAndPeriod(): { initialLogs: DailyLog[]; initialYear: number; initialMonth: number } {
+  if (initialLogsData) return initialLogsData;
+
+  const today = new Date();
+  const currentDeviceYear = today.getFullYear();
+  const currentDeviceMonth = today.getMonth() + 1;
+
+  let allStoredLogs: DailyLog[] = [];
+  const cleanSaved = localStorage.getItem('driver_daily_tracker_logs_v_clean');
+
+  if (cleanSaved) {
+    try {
+      const parsed = JSON.parse(cleanSaved);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const hasEntries = parsed.some((l: DailyLog) => (l.kmRodado || 0) > 0 || (l.app99?.earnings || 0) > 0 || (l.appUber?.earnings || 0) > 0);
+        if (hasEntries) {
+          allStoredLogs = performCalendarSweep(parsed, currentDeviceYear);
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  if (allStoredLogs.length === 0) {
+    allStoredLogs = DEFAULT_DAILY_LOGS.length > 0 ? performCalendarSweep(DEFAULT_DAILY_LOGS, 2026) : generateCleanEmptyYearLogs(2026);
+  }
+
+  // Find the most recent active month/year in logs
+  let activeYear = 0;
+  let activeMonth = 0;
+
+  const activeLogsDesc = [...allStoredLogs]
+    .filter(l => 
+      (l.kmRodado || 0) > 0 || 
+      (l.app99?.earnings || 0) > 0 || 
+      (l.appUber?.earnings || 0) > 0 || 
+      (l.appParticular?.earnings || 0) > 0 ||
+      (l.recompensasExtra || 0) > 0 ||
+      (l.outrasFontes || 0) > 0 ||
+      (l.carExpenses?.wash || 0) > 0 ||
+      (l.carExpenses?.toll || 0) > 0 ||
+      (l.carExpenses?.maintenance || 0) > 0 ||
+      (l.carExpenses?.parking || 0) > 0 ||
+      (l.carExpenses?.publicCharging || 0) > 0 ||
+      (l.carExpenses?.other || 0) > 0 ||
+      (l.foodExpenses?.lunch || 0) > 0 ||
+      (l.foodExpenses?.dinner || 0) > 0 ||
+      (l.foodExpenses?.snacks || 0) > 0 ||
+      (l.foodExpenses?.coffee || 0) > 0
+    )
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  if (activeLogsDesc.length > 0) {
+    const mostRecentActive = activeLogsDesc[0];
+    const parts = mostRecentActive.date.split('-');
+    if (parts.length === 3) {
+      activeYear = parseInt(parts[0], 10);
+      activeMonth = parseInt(parts[1], 10);
+    }
+  }
+
+  if (!activeYear || !activeMonth) {
+    activeYear = currentDeviceYear;
+    activeMonth = currentDeviceMonth;
+  }
+
+  initialLogsData = {
+    initialLogs: allStoredLogs,
+    initialYear: activeYear,
+    initialMonth: activeMonth
+  };
+
+  return initialLogsData;
+}
+
 export default function App() {
+  const initialData = getInitialLogsAndPeriod();
   const today = new Date();
   const currentYear = today.getFullYear();
-  const currentMonth = today.getMonth() + 1; // 1-12
+  const currentMonth = today.getMonth() + 1;
 
-  const [selectedYear, setSelectedYear] = useState<number>(currentYear);
-  const [selectedMonth, setSelectedMonth] = useState<number>(currentMonth);
+  const [selectedYear, setSelectedYear] = useState<number>(initialData.initialYear);
+  const [selectedMonth, setSelectedMonth] = useState<number>(initialData.initialMonth);
   const [isAllYear, setIsAllYear] = useState<boolean>(false);
   const [sweepNotification, setSweepNotification] = useState<string | null>(null);
   const [maintenanceAlert, setMaintenanceAlert] = useState<{ show: boolean, type: '2k' | '1k', remaining: number, currentKm: number, targetKm: number } | null>(null);
@@ -692,31 +771,7 @@ export default function App() {
   };
 
   // Store all daily logs - initialized with clean default logs or saved data
-  const [logs, setLogs] = useState<DailyLog[]>(() => {
-    let allStoredLogs: DailyLog[] = [];
-    
-    // Check if user has explicit saved logs in the clean key
-    const cleanSaved = localStorage.getItem('driver_daily_tracker_logs_v_clean');
-    if (cleanSaved) {
-      try {
-        const parsed = JSON.parse(cleanSaved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const hasEntries = parsed.some((l: DailyLog) => (l.kmRodado || 0) > 0 || (l.app99?.earnings || 0) > 0 || (l.appUber?.earnings || 0) > 0);
-          if (hasEntries) {
-            allStoredLogs = performCalendarSweep(parsed, 2026);
-          }
-        }
-      } catch (e) {
-        // ignore
-      }
-    }
-
-    if (allStoredLogs.length === 0) {
-      allStoredLogs = DEFAULT_DAILY_LOGS.length > 0 ? performCalendarSweep(DEFAULT_DAILY_LOGS, 2026) : generateCleanEmptyYearLogs(2026);
-    }
-
-    return allStoredLogs;
-  });
+  const [logs, setLogs] = useState<DailyLog[]>(initialData.initialLogs);
 
   // Modal Open/Close States
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -1503,14 +1558,62 @@ export default function App() {
   const [isInputActive, setIsInputActive] = useState(false);
   const [isBottomDockCollapsed, setIsBottomDockCollapsed] = useState(false);
 
+  // Monitor all open modals for scroll locking
+  const isAnyModalOpen = useMemo(() => {
+    return !!(
+      isModalOpen || 
+      isCarModalOpen || 
+      isKpisModalOpen || 
+      isEfficiencyModalOpen || 
+      isAppShareModalOpen || 
+      isExcelImportOpen || 
+      isMultimodalAiOpen || 
+      isAssistantOpen || 
+      isDatePickerModalOpen || 
+      isHelpModalOpen || 
+      isProjectionModalOpen || 
+      isWeeklySummaryOpen || 
+      isConflictModalOpen || 
+      isConfirmClearAllModalOpen || 
+      isDeepSweepModalOpen
+    );
+  }, [
+    isModalOpen, 
+    isCarModalOpen, 
+    isKpisModalOpen, 
+    isEfficiencyModalOpen, 
+    isAppShareModalOpen, 
+    isExcelImportOpen, 
+    isMultimodalAiOpen, 
+    isAssistantOpen, 
+    isDatePickerModalOpen, 
+    isHelpModalOpen, 
+    isProjectionModalOpen, 
+    isWeeklySummaryOpen, 
+    isConflictModalOpen, 
+    isConfirmClearAllModalOpen, 
+    isDeepSweepModalOpen
+  ]);
+
   useEffect(() => {
-    const onFocusIn = (e: FocusEvent) => {
+    if (isAnyModalOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [isAnyModalOpen]);
+
+  useEffect(() => {
+    const handleFocus = (e: FocusEvent) => {
       const el = e.target as HTMLElement;
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
         setIsInputActive(true);
       }
     };
-    const onFocusOut = () => {
+    const handleBlur = () => {
       setTimeout(() => {
         const active = document.activeElement;
         if (!active || (active.tagName !== 'INPUT' && active.tagName !== 'TEXTAREA' && active.tagName !== 'SELECT')) {
@@ -1518,11 +1621,11 @@ export default function App() {
         }
       }, 150);
     };
-    window.addEventListener('focusin', onFocusIn);
-    window.addEventListener('focusout', onFocusOut);
+    window.addEventListener('focus', handleFocus, true);
+    window.addEventListener('blur', handleBlur, true);
     return () => {
-      window.removeEventListener('focusin', onFocusIn);
-      window.removeEventListener('focusout', onFocusOut);
+      window.removeEventListener('focus', handleFocus, true);
+      window.removeEventListener('blur', handleBlur, true);
     };
   }, []);
 
@@ -2389,15 +2492,15 @@ export default function App() {
       setSnacks(existing.foodExpenses?.snacks && existing.foodExpenses.snacks > 0 ? String(existing.foodExpenses.snacks) : '');
       setCoffee(existing.foodExpenses?.coffee && existing.foodExpenses.coffee > 0 ? String(existing.foodExpenses.coffee) : '');
 
-      setURides(existing.appUber.rides !== undefined ? String(existing.appUber.rides) : '');
+      setURides(existing.appUber.rides && existing.appUber.rides > 0 ? String(existing.appUber.rides) : '');
       setUEarnings(existing.appUber.earnings && existing.appUber.earnings > 0 ? String(existing.appUber.earnings) : '');
       setUBonus(existing.appUber.bonus && existing.appUber.bonus > 0 ? String(existing.appUber.bonus) : '');
 
-      setNRides(existing.app99.rides !== undefined ? String(existing.app99.rides) : '');
+      setNRides(existing.app99.rides && existing.app99.rides > 0 ? String(existing.app99.rides) : '');
       setNEarnings(existing.app99.earnings && existing.app99.earnings > 0 ? String(existing.app99.earnings) : '');
       setNBonus(existing.app99.bonus && existing.app99.bonus > 0 ? String(existing.app99.bonus) : '');
 
-      setPRides(existing.appParticular.rides !== undefined ? String(existing.appParticular.rides) : '');
+      setPRides(existing.appParticular.rides && existing.appParticular.rides > 0 ? String(existing.appParticular.rides) : '');
       setPEarnings(existing.appParticular.earnings && existing.appParticular.earnings > 0 ? String(existing.appParticular.earnings) : '');
 
       setRecompensasExtra(existing.recompensasExtra && existing.recompensasExtra > 0 ? String(existing.recompensasExtra) : '');
@@ -5668,7 +5771,7 @@ export default function App() {
       </main>
 
       {/* BOTÃO FLUTUANTE COMPACTO PARA REEXIBIR O RODAPÉ SE ELE FOI RECOLHIDO */}
-      {isBottomDockCollapsed && !isAddingFixed && !isInputActive && !isModalOpen && !isCarModalOpen && (
+      {isBottomDockCollapsed && !isAddingFixed && !isInputActive && !isAnyModalOpen && (
         <button
           type="button"
           onClick={() => setIsBottomDockCollapsed(false)}
@@ -5685,8 +5788,8 @@ export default function App() {
       <nav 
         id="bottom-dock-nav" 
         className={`fixed bottom-0 left-0 right-0 z-40 bg-[#090b10]/95 backdrop-blur-xl border-t border-zinc-800/90 shadow-[0_-15px_40px_rgba(0,0,0,0.9)] pb-[calc(env(safe-area-inset-bottom)+14px)] pt-3 px-2 transition-all duration-300 ease-in-out ${
-          (isInputActive || isAddingFixed || isModalOpen || isCarModalOpen || isKpisModalOpen || isEfficiencyModalOpen || isAppShareModalOpen || isExcelImportOpen || isMultimodalAiOpen || isAssistantOpen || isDatePickerModalOpen || isHelpModalOpen || isBottomDockCollapsed)
-            ? 'translate-y-full opacity-0 pointer-events-none invisible' 
+          (isInputActive || isAddingFixed || isAnyModalOpen || isBottomDockCollapsed)
+            ? 'translate-y-full opacity-0 pointer-events-none invisible hidden' 
             : 'translate-y-0 opacity-100 visible'
         }`}
       >
