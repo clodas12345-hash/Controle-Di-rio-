@@ -620,14 +620,11 @@ function getInitialLogsAndPeriod(): { initialLogs: DailyLog[]; initialYear: numb
     }
   }
 
-  // Se o app nunca foi inicializado e não temos logs salvos, carrega os dados demo/padrão
-  if (!isInitialized && allStoredLogs.length === 0) {
-    allStoredLogs = DEFAULT_DAILY_LOGS.length > 0 ? performCalendarSweep(DEFAULT_DAILY_LOGS, 2026) : generateCleanEmptyYearLogs(2026);
+  // Iniciamos o app sempre 100% limpo e zerado por padrão!
+  if (allStoredLogs.length === 0) {
+    allStoredLogs = generateCleanEmptyYearLogs(currentDeviceYear);
     localStorage.setItem('driver_app_initialized', 'true');
     localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(allStoredLogs));
-  } else if (allStoredLogs.length === 0) {
-    // Se o usuário explicitamente apagou tudo, mantém o app completamente limpo/vazio
-    allStoredLogs = generateCleanEmptyYearLogs(currentDeviceYear);
   }
 
   // Find the most recent active month/year in logs
@@ -722,7 +719,7 @@ export default function App() {
         console.error(e);
       }
     }
-    return DEFAULT_CAR_PROFILE;
+    return TRULY_BLANK_CAR_PROFILE;
   });
 
   // Fixed Monthly Expenses State - Inicia com dados limpos e saneados
@@ -740,7 +737,7 @@ export default function App() {
         console.error(e);
       }
     }
-    return DEFAULT_FIXED_EXPENSES_BY_MONTH;
+    return {};
   });
 
   const currentMonthKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
@@ -2218,22 +2215,8 @@ export default function App() {
   // (Automatic override of monthlyCarExpense by fixed expenses removed per user request)
 
   const handleClearAllData = async () => {
-    // 1. Clear all localStorage keys related to this app
-    const keysToRemove = [
-      'driver_daily_tracker_logs_v_clean',
-      'driver_car_profile_v2',
-      'driver_fixed_expenses_v6_by_month'
-    ];
-
-    keysToRemove.forEach(k => localStorage.removeItem(k));
-
-    // Also clear any other keys that might be related to previous versions
-    for (let i = localStorage.length - 1; i >= 0; i--) {
-      const k = localStorage.key(i);
-      if (k && k !== 'driver_app_initialized' && (k.includes('driver_') || k.includes('tracker'))) {
-        localStorage.removeItem(k);
-      }
-    }
+    // 1. Limpa absolutamente todo o localStorage do aplicativo
+    localStorage.clear();
 
     // Set initialized to true so it stays clean and doesn't re-populate demo data
     localStorage.setItem('driver_app_initialized', 'true');
@@ -2252,7 +2235,11 @@ export default function App() {
     setIsConfirmClearAllModalOpen(false);
     setIsHelpModalOpen(false);
     setSweepNotification('Todos os dados foram apagados com sucesso! Veículo, contas fixas e lançamentos zerados.');
-    setTimeout(() => setSweepNotification(null), 8000);
+    
+    // Força a sincronização do banco de dados do WebView no Android recarregando a página
+    setTimeout(() => {
+      window.location.reload();
+    }, 300);
   };
 
   const handleDeepSweep = async () => {
