@@ -81,6 +81,41 @@ jobs:
       - name: Copiar google-services.json
         run: cp google-services.json android/app/google-services.json
 
+      - name: Injetar Plugin google-services no build.gradle Raiz
+        run: |
+          node -e '
+          const fs = require("fs");
+          const path = "android/build.gradle";
+          let content = fs.readFileSync(path, "utf8");
+          if (!content.includes("com.google.gms:google-services")) {
+            content = content.replace(
+              /dependencies\s*{/,
+              `dependencies {\n        classpath "com.google.gms:google-services:4.4.2"`
+            );
+            fs.writeFileSync(path, content, "utf8");
+            console.log("✅ Plugin google-services adicionado ao build.gradle raiz");
+          }
+          '
+
+      - name: Injetar Plugin e Dependências do Firebase no build.gradle do App
+        run: |
+          node -e '
+          const fs = require("fs");
+          const path = "android/app/build.gradle";
+          let content = fs.readFileSync(path, "utf8");
+          if (!content.includes("com.google.gms.google-services")) {
+            content += "\napply plugin: \"com.google.gms.google-services\"\n";
+          }
+          if (!content.includes("firebase-firestore")) {
+            content = content.replace(
+              /dependencies\s*{/,
+              `dependencies {\n    implementation platform("com.google.firebase:firebase-bom:33.5.1")\n    implementation "com.google.firebase:firebase-firestore"\n    implementation "com.google.firebase:firebase-auth"`
+            );
+          }
+          fs.writeFileSync(path, content, "utf8");
+          console.log("✅ Plugin e dependências do Firebase adicionados ao build.gradle do app");
+          '
+
       - name: Forçar Versão Maior no Android (find e sed)
         run: |
           echo "Subindo o versionCode para o número do build: ${{ github.run_number }}"
