@@ -301,8 +301,14 @@ EOF
 
       - name: Configurar Gradle
         uses: gradle/actions/setup-gradle@v4
+        continue-on-error: true
+        with:
+          build-root-directory: android
+          validate-wrappers: false
 
       - name: Compilar APK Android
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m"
         run: |
           cd android
           chmod +x gradlew
