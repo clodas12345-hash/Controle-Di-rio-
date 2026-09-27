@@ -73,14 +73,55 @@ jobs:
           npx cap add android
           npx cap sync android
           npm run build:mobile
-          # Atualiza Gradle Wrapper para 8.7 para compatibilidade total com Java 17
+          # Garante Gradle Wrapper 8.2.1 oficial do Capacitor 6 (compatibilidade total com AGP 8.2.1 e Java 17)
           if [ -f "android/gradle/wrapper/gradle-wrapper.properties" ]; then
-            sed -i 's/distributionUrl=.*/distributionUrl=https\\:\/\/services.gradle.org\/distributions\/gradle-8.7-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
-            echo "✅ Gradle Wrapper atualizado para 8.7"
+            sed -i 's/distributionUrl=.*/distributionUrl=https\\:\/\/services.gradle.org\/distributions\/gradle-8.2.1-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
+            echo "✅ Gradle Wrapper configurado para 8.2.1 (homologado para Capacitor 6)"
           fi
 
-      - name: Copiar google-services.json
-        run: cp google-services.json android/app/google-services.json
+      - name: Configurar google-services.json
+        run: |
+          mkdir -p android/app
+          if [ -f "google-services.json" ]; then
+            cp google-services.json android/app/google-services.json
+            echo "✅ google-services.json copiado do repositório"
+          else
+            echo "Gerando google-services.json oficial..."
+            node -e '
+            const fs = require("fs");
+            const data = {
+              "project_info": {
+                "project_number": "250327417701",
+                "project_id": "controle-diario-23810",
+                "storage_bucket": "controle-diario-23810.firebasestorage.app"
+              },
+              "client": [
+                {
+                  "client_info": {
+                    "mobilesdk_app_id": "1:250327417701:android:6ade720443c3a1faac578c",
+                    "android_client_info": {
+                      "package_name": "com.gkd.controlediario"
+                    }
+                  },
+                  "oauth_client": [],
+                  "api_key": [
+                    {
+                      "current_key": "AIzaSyBP0NNKODk1SE1BFJZs47on7oyGCwK0-9w"
+                    }
+                  ],
+                  "services": {
+                    "appinvite_service": {
+                      "other_platform_oauth_client": []
+                    }
+                  }
+                }
+              ],
+              "configuration_version": "1"
+            };
+            fs.writeFileSync("android/app/google-services.json", JSON.stringify(data, null, 2), "utf8");
+            console.log("✅ google-services.json oficial gerado com sucesso em android/app/");
+            '
+          fi
 
       - name: Injetar Plugin google-services no build.gradle Raiz
         run: |
