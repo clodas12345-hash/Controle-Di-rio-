@@ -1,3 +1,4 @@
+```yaml
 name: Gerar APK Android - Controle Diário
 
 on:
@@ -73,11 +74,13 @@ jobs:
           npx cap add android
           npx cap sync android
           npm run build:mobile
-          # Atualiza Gradle Wrapper para 8.7 para compatibilidade total com Java 17
           if [ -f "android/gradle/wrapper/gradle-wrapper.properties" ]; then
             sed -i 's/distributionUrl=.*/distributionUrl=https\\:\/\/services.gradle.org\/distributions\/gradle-8.7-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
             echo "✅ Gradle Wrapper atualizado para 8.7"
           fi
+
+      - name: Copiar google-services.json
+        run: cp google-services.json android/app/google-services.json
 
       - name: Forçar Versão Maior no Android (find e sed)
         run: |
@@ -103,7 +106,7 @@ jobs:
           const fs = require("fs");
           const path = require("path");
           const manifestPath = path.resolve("android/app/src/main/AndroidManifest.xml");
-          
+
           if (!fs.existsSync(manifestPath)) {
             console.error("AndroidManifest.xml não encontrado!");
             process.exit(1);
@@ -152,7 +155,6 @@ jobs:
           }
 
           manifest = manifest.replace("<application", permissionsXml + "\n    <application");
-          // Desativa o Backup Automático do Android para garantir que reinstalações comecem 100% limpas (sem restaurar dados anteriores do Google Drive)
           manifest = manifest.replace(/android:allowBackup="true"/g, `android:allowBackup="false"`);
           fs.writeFileSync(manifestPath, manifest, "utf8");
           console.log("✅ Todas as permissões foram injetadas no AndroidManifest.xml!");
@@ -193,7 +195,6 @@ jobs:
               const target = path.join(resDir, s.dir);
               if (!fs.existsSync(target)) fs.mkdirSync(target, { recursive: true });
 
-              // 88% da área: escala exata para bater visualmente com VoltaLá e Rastreador
               const logoSizeFg = Math.round(s.fg * 0.88);
               const logoBufferFg = await sharp(iconPath)
                 .resize(logoSizeFg, logoSizeFg, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
@@ -212,7 +213,6 @@ jobs:
               .png()
               .toFile(path.join(target, "ic_launcher_foreground.png"));
 
-              // Ícone legado quadrado (88%)
               const legacySize = Math.round(s.size * 0.88);
               const logoLegacy = await sharp(iconPath)
                 .resize(legacySize, legacySize, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
@@ -231,7 +231,6 @@ jobs:
               .png()
               .toFile(path.join(target, "ic_launcher.png"));
 
-              // Ícone redondo (88%)
               await sharp({
                 create: {
                   width: s.size,
@@ -275,3 +274,4 @@ jobs:
           name: Controle_Diario_APK
           path: apk_output/Controle_Diario.apk
           if-no-files-found: error
+```
