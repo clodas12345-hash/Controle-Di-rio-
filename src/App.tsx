@@ -10,6 +10,7 @@ import { MultimodalAiModal } from './components/MultimodalAiModal';
 import { ConflictResolverModal, ConflictData } from './components/ConflictResolverModal';
 import { requestNotificationPermission, sendAppNotification } from './services/notificationService';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
 import JSZip from 'jszip';
 import { 
   Car, 
@@ -63,6 +64,9 @@ import {
   Settings,
   FileSpreadsheet,
   Download,
+  Folder,
+  FolderDown,
+  Share2,
   Utensils,
   Target,
   Clipboard,
@@ -1394,8 +1398,23 @@ export default function App() {
   const internalFileInputRef = useRef<HTMLInputElement>(null);
   const [internalBackupMessage, setInternalBackupMessage] = useState<string | null>(null);
   const [exportScope, setExportScope] = useState<'all' | 'year' | 'month' | 'week'>('all');
+  const [isExportFolderModalOpen, setIsExportFolderModalOpen] = useState(false);
+  const [isExportingBackup, setIsExportingBackup] = useState(false);
 
-  const handleInternalExport = async (scopeOverride?: 'all' | 'year' | 'month' | 'week') => {
+  // Opens the pop-up modal to let the user select where / which folder to save the backup
+  const handleInternalExport = (scopeOverride?: 'all' | 'year' | 'month' | 'week') => {
+    if (scopeOverride) {
+      setExportScope(scopeOverride);
+    }
+    setIsExportFolderModalOpen(true);
+  };
+
+  const handleInternalExportWithTarget = async (
+    targetFolder: 'documents' | 'downloads' | 'system_picker',
+    scopeOverride?: 'all' | 'year' | 'month' | 'week'
+  ) => {
+    setIsExportFolderModalOpen(false);
+    setIsExportingBackup(true);
     try {
       const scope = scopeOverride || exportScope;
       const now = new Date();
@@ -1464,8 +1483,101 @@ export default function App() {
       };
 
       const content = JSON.stringify(backupData, null, 2);
-
       const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
+
+      // CASO 1: SELETOR NATIVO DO SISTEMA ("Salvar em...")
+      if (targetFolder === 'system_picker') {
+        // Se for no app nativo Capacitor (Android)
+        if (isCapacitorNative && typeof Filesystem !== 'undefined') {
+          try {
+            await Filesystem.writeFile({
+              path: jsonFileName,
+              data: content,
+              directory: Directory.Cache,
+              encoding: Encoding.UTF8
+            });
+            const fileUri = await Filesystem.getUri({
+              path: jsonFileName,
+              directory: Directory.Cache
+            });
+            await Share.share({
+              title: 'Backup Controle Diário',
+              text: `Backup do Controle Diário (${jsonFileName})`,
+              url: fileUri.uri,
+              dialogTitle: 'Salvar backup em...'
+            });
+            setInternalBackupMessage(`Seletor do sistema aberto para salvar:\n${jsonFileName}`);
+            setTimeout(() => setInternalBackupMessage(null), 6000);
+            return;
+          } catch (shareErr: any) {
+            console.warn('Share nativo falhou, tentando fallback:', shareErr);
+          }
+        }
+
+        // Se for no navegador com suporte a File System Access API (Chrome/Edge/Android Chrome)
+        if ('showSaveFilePicker' in window) {
+          try {
+            const handle = await (window as any).showSaveFilePicker({
+              suggestedName: jsonFileName,
+              types: [{
+                description: 'Arquivo de Backup JSON',
+                accept: { 'application/json': ['.json'] }
+              }]
+            });
+            const writable = await handle.createWritable();
+            await writable.write(content);
+            await writable.close();
+            setInternalBackupMessage(`Sucesso! Salvo na pasta escolhida:\n${jsonFileName}`);
+            setTimeout(() => setInternalBackupMessage(null), 6000);
+            return;
+          } catch (pickerErr: any) {
+            if (pickerErr.name === 'AbortError') {
+              // Cancelado pelo usuário
+              return;
+            }
+            console.warn('showSaveFilePicker falhou:', pickerErr);
+          }
+        }
+
+        // Fallback Web Share API
+        if (typeof navigator !== 'undefined' && navigator.share && typeof File !== 'undefined') {
+          try {
+            const file = new File([content], jsonFileName, { type: 'application/json' });
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+              await navigator.share({
+                title: 'Backup Controle Diário',
+                files: [file]
+              });
+              setInternalBackupMessage(`Arquivo compartilhado com sucesso:\n${jsonFileName}`);
+              setTimeout(() => setInternalBackupMessage(null), 6000);
+              return;
+            }
+          } catch (err: any) {
+            if (err.name === 'AbortError') return;
+          }
+        }
+      }
+
+      // CASO 2: PASTA DOCUMENTOS
+      if (targetFolder === 'documents') {
+        if (isCapacitorNative && typeof Filesystem !== 'undefined') {
+          try {
+            await Filesystem.writeFile({
+              path: jsonFileName,
+              data: content,
+              directory: Directory.Documents,
+              encoding: Encoding.UTF8
+            });
+            setInternalBackupMessage(`Sucesso! Salvo na pasta Documentos:\n${jsonFileName}`);
+            setTimeout(() => setInternalBackupMessage(null), 6000);
+            return;
+          } catch (nativeErr) {
+            console.warn('Filesystem Documentos falhou, fazendo download:', nativeErr);
+          }
+        }
+      }
+
+      // CASO 3: PASTA DOWNLOADS OU DOWNLOAD NAVEGADOR
       if (isCapacitorNative && typeof Filesystem !== 'undefined') {
         try {
           await Filesystem.writeFile({
@@ -1474,15 +1586,15 @@ export default function App() {
             directory: Directory.Documents,
             encoding: Encoding.UTF8
           });
-          setInternalBackupMessage(`Sucesso! Salvo na pasta Documentos:\n${jsonFileName}`);
+          setInternalBackupMessage(`Sucesso! Salvo no seu dispositivo:\n${jsonFileName}`);
           setTimeout(() => setInternalBackupMessage(null), 6000);
           return;
         } catch (nativeErr) {
-          console.warn('Filesystem JSON write failed, falling back to download:', nativeErr);
+          console.warn('Filesystem download falhou:', nativeErr);
         }
       }
 
-      // Browser download directly as pure JSON file
+      // Download tradicional do navegador (vai direto para a pasta Downloads padrão)
       const blob = new Blob([content], { type: 'application/json;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -1494,12 +1606,15 @@ export default function App() {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
 
-      setInternalBackupMessage(`Sucesso! Arquivo JSON (${scope.toUpperCase()}) baixado:\n${jsonFileName}`);
+      const targetMsg = targetFolder === 'downloads' ? 'pasta Downloads' : 'seu dispositivo';
+      setInternalBackupMessage(`Sucesso! Arquivo JSON salvo na ${targetMsg}:\n${jsonFileName}`);
       setTimeout(() => setInternalBackupMessage(null), 6000);
     } catch (e: any) {
       console.error('Erro ao exportar backup interno:', e);
       setInternalBackupMessage('Erro ao gerar arquivo JSON de backup.');
       setTimeout(() => setInternalBackupMessage(null), 6000);
+    } finally {
+      setIsExportingBackup(false);
     }
   };
 
@@ -7955,11 +8070,11 @@ export default function App() {
                         className="p-3 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 hover:border-emerald-500/60 rounded-xl flex items-center gap-3 text-left transition-all cursor-pointer group"
                       >
                         <div className="p-2 bg-emerald-500 text-zinc-950 rounded-lg group-hover:scale-110 transition-transform">
-                          <Upload className="w-4 h-4 rotate-180 stroke-[2.5]" />
+                          <FolderDown className="w-4 h-4 stroke-[2.5]" />
                         </div>
                         <div>
                           <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Exportar Backup JSON ({exportScope === 'all' ? 'Tudo' : exportScope === 'year' ? 'Ano' : exportScope === 'month' ? 'Mês' : 'Semana'})</span>
-                          <span className="text-[11px] text-zinc-400">Baixar arquivo .json direto (Backup_Controle_Diario_DD-MM-AAAA.json)</span>
+                          <span className="text-[11px] text-zinc-400">Escolha a pasta de destino no aparelho (.json)</span>
                         </div>
                       </button>
 
@@ -9558,6 +9673,144 @@ export default function App() {
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Sim, Apagar Tudo</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* POP-UP DE ESCOLHA DE PASTA PARA SALVAR BACKUP */}
+      {isExportFolderModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fade-in">
+          <div className="bg-[#121215] border border-emerald-500/40 rounded-2xl max-w-md w-full p-5 sm:p-6 space-y-4 shadow-2xl relative overflow-hidden">
+            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-600" />
+            
+            {/* Header */}
+            <div className="flex items-start justify-between gap-3 pt-1">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-emerald-500/15 border border-emerald-500/30 rounded-xl text-emerald-400">
+                  <FolderDown className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-100">Onde Deseja Salvar o Backup?</h3>
+                  <p className="text-xs text-zinc-400">
+                    Escolha a pasta de destino no seu aparelho
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsExportFolderModalOpen(false)}
+                className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* File info pill */}
+            <div className="p-2.5 bg-zinc-900/90 border border-zinc-800 rounded-xl flex items-center justify-between text-[11px] text-zinc-300">
+              <div className="flex items-center gap-2 truncate">
+                <FileText className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="truncate font-mono">Backup_Controle_Diario_{new Date().toLocaleDateString('pt-BR').replace(/\//g, '-')}.json</span>
+              </div>
+              <span className="px-2 py-0.5 bg-emerald-500/15 text-emerald-300 font-bold rounded-md shrink-0 ml-2">
+                {exportScope === 'all' ? 'Tudo' : exportScope === 'year' ? 'Ano' : exportScope === 'month' ? 'Mês' : 'Semana'}
+              </span>
+            </div>
+
+            {/* Folder Destination Options */}
+            <div className="space-y-2.5 pt-1">
+              {/* Opção 1: Pasta Documentos */}
+              <button
+                type="button"
+                onClick={() => handleInternalExportWithTarget('documents')}
+                disabled={isExportingBackup}
+                className="w-full p-3.5 bg-zinc-900 hover:bg-zinc-800/90 border border-zinc-800 hover:border-emerald-500/50 rounded-xl flex items-center justify-between text-left transition-all cursor-pointer group hover:scale-[1.01]"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 rounded-lg group-hover:scale-110 transition-transform">
+                    <Folder className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-zinc-100 group-hover:text-emerald-300">Pasta Documentos</span>
+                      <span className="px-1.5 py-0.5 text-[9px] font-bold bg-emerald-500/20 text-emerald-300 rounded border border-emerald-500/30">Recomendado</span>
+                    </div>
+                    <span className="text-[11px] text-zinc-400 block mt-0.5">
+                      Salva direto na pasta pública de Documentos do celular
+                    </span>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-emerald-400 transition-colors shrink-0" />
+              </button>
+
+              {/* Opção 2: Pasta Downloads */}
+              <button
+                type="button"
+                onClick={() => handleInternalExportWithTarget('downloads')}
+                disabled={isExportingBackup}
+                className="w-full p-3.5 bg-zinc-900 hover:bg-zinc-800/90 border border-zinc-800 hover:border-cyan-500/50 rounded-xl flex items-center justify-between text-left transition-all cursor-pointer group hover:scale-[1.01]"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 rounded-lg group-hover:scale-110 transition-transform">
+                    <Download className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-zinc-100 group-hover:text-cyan-300">Pasta Downloads</span>
+                      <span className="px-1.5 py-0.5 text-[9px] font-bold bg-cyan-500/20 text-cyan-300 rounded border border-cyan-500/30">Padrão</span>
+                    </div>
+                    <span className="text-[11px] text-zinc-400 block mt-0.5">
+                      Baixa diretamente para a pasta de Downloads do dispositivo
+                    </span>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-cyan-400 transition-colors shrink-0" />
+              </button>
+
+              {/* Opção 3: Seletor Nativo do Sistema ("Salvar em...") */}
+              <button
+                type="button"
+                onClick={() => handleInternalExportWithTarget('system_picker')}
+                disabled={isExportingBackup}
+                className="w-full p-3.5 bg-zinc-900 hover:bg-zinc-800/90 border border-zinc-800 hover:border-amber-500/50 rounded-xl flex items-center justify-between text-left transition-all cursor-pointer group hover:scale-[1.01]"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-amber-500/15 text-amber-400 border border-amber-500/30 rounded-lg group-hover:scale-110 transition-transform">
+                    <Share2 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-zinc-100 group-hover:text-amber-300">Escolher Pasta no Celular ("Salvar em...")</span>
+                      <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-500/20 text-amber-300 rounded border border-amber-500/30">Nativo</span>
+                    </div>
+                    <span className="text-[11px] text-zinc-400 block mt-0.5">
+                      No APK instalado, abre o menu do Android ("Salvar em...") ou Compartilhar
+                    </span>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-amber-400 transition-colors shrink-0" />
+              </button>
+            </div>
+
+            {/* Aviso informativo de ambiente (Navegador vs APK Nativo) */}
+            {!Boolean((window as any)?.Capacitor?.isNativePlatform?.()) && (
+              <div className="p-2.5 bg-blue-500/10 border border-blue-500/20 rounded-xl text-[11px] text-blue-300 flex items-start gap-2">
+                <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                <p className="leading-relaxed">
+                  <strong>Aviso do Navegador:</strong> No Chrome do celular, o Android bloqueia a escolha manual de pastas por segurança e direciona os arquivos para <strong>Downloads</strong>. No <strong>APK instalado</strong>, o app tem permissão para salvar direto em <strong>Documentos</strong> ou abrir o seletor.
+                </p>
+              </div>
+            )}
+
+            {/* Footer Buttons */}
+            <div className="pt-2 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setIsExportFolderModalOpen(false)}
+                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+              >
+                Cancelar
               </button>
             </div>
           </div>
