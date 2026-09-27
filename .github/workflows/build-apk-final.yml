@@ -1,4 +1,3 @@
-```yaml
 name: Gerar APK Android - Controle Diário
 
 on:
@@ -274,4 +273,3 @@ jobs:
           name: Controle_Diario_APK
           path: apk_output/Controle_Diario.apk
           if-no-files-found: error
-```
