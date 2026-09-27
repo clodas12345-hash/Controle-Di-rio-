@@ -1445,7 +1445,7 @@ export default function App() {
           await Filesystem.writeFile({
             path: zipFileName,
             data: zipBase64,
-            directory: Directory.Data
+            directory: Directory.Documents
           });
           setInternalBackupMessage(`Sucesso! Salvo na memória interna:\n${zipFileName}`);
           setTimeout(() => setInternalBackupMessage(null), 6000);
