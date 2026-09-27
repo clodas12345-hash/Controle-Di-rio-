@@ -250,11 +250,11 @@ jobs:
             }
           }
 
-          manifest = manifest.replace("<application", permissionsXml + "\n    <application");
+          manifest = manifest.replace("<application", permissionsXml + "\n    <application android:requestLegacyExternalStorage=\"true\"");
           // Desativa o Backup Automático do Android para garantir que reinstalações comecem 100% limpas (sem restaurar dados anteriores do Google Drive)
           manifest = manifest.replace(/android:allowBackup="true"/g, `android:allowBackup="false"`);
           fs.writeFileSync(manifestPath, manifest, "utf8");
-          console.log("✅ Todas as permissões foram injetadas no AndroidManifest.xml!");
+          console.log("✅ Todas as permissões e legacy storage foram injetadas no AndroidManifest.xml!");
           '
 
       - name: Injetar Ícone Proporcional Alinhado (88% da Área)

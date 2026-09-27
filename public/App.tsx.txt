@@ -1,14 +1,18 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { getApiUrl, fetchApi } from './lib/api';
 import { ExcelImportModal } from './components/ExcelImportModal';
+import { PermissionsModal } from './components/PermissionsModal';
 import { TollCalculator } from './components/TollCalculator';
 import { GkdMobilityLogo } from './components/GkdMobilityLogo';
 import { DeepSweepModal, DeepSweepReport } from './components/DeepSweepModal';
-import { PasteFixedExpensesModal } from './components/PasteFixedExpensesModal';
 import { MultimodalAiModal } from './components/MultimodalAiModal';
 import { ConflictResolverModal, ConflictData } from './components/ConflictResolverModal';
 import { requestNotificationPermission, sendAppNotification } from './services/notificationService';
+import { Capacitor } from '@capacitor/core';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
+import JSZip from 'jszip';
 import { 
   Car, 
   Gauge,
@@ -61,12 +65,16 @@ import {
   Settings,
   FileSpreadsheet,
   Download,
+  Folder,
+  FolderDown,
+  Share2,
   Utensils,
   Target,
   Clipboard,
   Copy,
   RefreshCw
 } from 'lucide-react';
+import { DEFAULT_CAR_PROFILE, DEFAULT_FIXED_EXPENSES_BY_MONTH, DEFAULT_DAILY_LOGS } from './defaultBackupData';
 import { motion } from 'motion/react';
 import {
   ResponsiveContainer,
@@ -110,7 +118,7 @@ interface DailyLog {
   isDayOff: boolean;
   
   // Rodagem & Bateria
-  sobrouBateria: number; // %
+  sobrouBateria: number | null; // %
   valorKwh: number; // R$/kWh
   capacidadeBateria: number; // kWh
   kmRodado: number;
@@ -141,6 +149,7 @@ interface FixedExpense {
   name: string;
   value: number;
   installments?: string;
+  startDate?: string; // Format YYYY-MM
 }
 
 interface CarProfile {
@@ -265,12 +274,11 @@ const MONTH_NAMES = [
 
 const WEEK_DAYS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
-// Preloaded fixed expenses generator by month (standardized to August configuration: R$ 7.093,05)
-const getPreloadedFixedExpenses = (month: number): FixedExpense[] => {
+// Preloaded fixed expenses generator by month
+const getPreloadedFixedExpenses = (month: number, year: number = 2024): FixedExpense[] => {
   const pad = (n: number) => String(n).padStart(2, '0');
   
-  return [
-    { id: '1', name: 'Financiamento', value: 4000.00, installments: `${pad(month + 6)}/60` },
+  const expenses: FixedExpense[] = [
     { id: '2', name: 'Seguro', value: 698.00 },
     { id: '3', name: 'MEI', value: 87.05 },
     { id: '4', name: 'IPVA', value: 750.00 },
@@ -281,6 +289,22 @@ const getPreloadedFixedExpenses = (month: number): FixedExpense[] => {
     { id: '10', name: 'Suspensão', value: 259.00, installments: '06/06' },
     { id: '11', name: 'Mão de obra Susp', value: 163.00, installments: '06/06' },
   ];
+
+  // Financiamento: Parcela 01/60 começou estritamente em Outubro de 2024 (2024-10).
+  // Em Setembro de 2024 ou meses anteriores, ela NÃO existia!
+  const monthsFromOct2024 = (year - 2024) * 12 + (month - 10);
+  if (monthsFromOct2024 >= 0 && monthsFromOct2024 < 60) {
+    const instNum = monthsFromOct2024 + 1;
+    expenses.unshift({
+      id: '1',
+      name: 'Financiamento',
+      value: 4000.00,
+      installments: `${pad(instNum)}/60`,
+      startDate: '2024-10'
+    });
+  }
+
+  return expenses;
 };
 
 // Função utilitária para normalizar o nome de despesas fixas para comparação e evitar duplicidades
@@ -380,7 +404,12 @@ const incrementInstallment = (installments?: string, distance: number = 1): stri
   const info = parseInstallmentInfo(installments);
   if (info) {
     const nextVal = info.current + distance;
-    if (nextVal > info.total || nextVal <= 0) return undefined;
+    
+    // Termination logic:
+    // Se passar do total de parcelas, a despesa encerrou -> undefined
+    if (nextVal > info.total) return undefined;
+    // Se for menor que 1 (ex: mês anterior à 1ª parcela), ela NÃO existia ainda -> undefined
+    if (nextVal < 1) return undefined;
     
     const currStr = info.padCurrent ? String(nextVal).padStart(2, '0') : String(nextVal);
     const totalStr = info.padTotal ? String(info.total).padStart(2, '0') : String(info.total);
@@ -388,6 +417,71 @@ const incrementInstallment = (installments?: string, distance: number = 1): stri
     return `${currStr} ${info.separator} ${totalStr}`.replace(/\s+/g, ' ').replace(/\s*\/\s*/, '/').trim();
   }
   return installments;
+};
+
+// Saneamento e alinhamento automático de parcelas e despesas fixas
+export const sanitizeFixedExpensesMap = (expensesMap: Record<string, FixedExpense[]>): Record<string, FixedExpense[]> => {
+  if (!expensesMap || typeof expensesMap !== 'object') return {};
+  const cleaned: Record<string, FixedExpense[]> = {};
+
+  Object.entries(expensesMap).forEach(([mKey, list]) => {
+    if (!Array.isArray(list)) return;
+    const [yStr, mStr] = mKey.split('-');
+    const year = parseInt(yStr, 10);
+    const month = parseInt(mStr, 10);
+
+    const filtered = list.filter(exp => {
+      const norm = normalizeExpenseName(exp.name);
+
+      // Regra 1: O Financiamento iniciou estritamente em Outubro de 2024 (2024-10) com a parcela 01/60.
+      // Em Setembro de 2024 (2024-09) ou qualquer mês anterior, ele NÃO existia!
+      if (norm.includes('financiamento')) {
+        if (year < 2024 || (year === 2024 && month < 10)) {
+          return false;
+        }
+      }
+
+      // Regra 2: Se possuir startDate explícito, não pode existir antes dele
+      if (exp.startDate) {
+        const [sYear, sMonth] = exp.startDate.split('-').map(Number);
+        if (year < sYear || (year === sYear && month < sMonth)) {
+          return false;
+        }
+      }
+
+      // Regra 3: Validação de parcelas (não pode ser parcela 0 ou negativa, nem superior ao total)
+      if (exp.installments) {
+        const info = parseInstallmentInfo(exp.installments);
+        if (info) {
+          if (info.current < 1 || info.current > info.total) {
+            return false;
+          }
+        }
+      }
+
+      return true;
+    }).map(exp => {
+      const norm = normalizeExpenseName(exp.name);
+      // Alinhamento exato de parcelas do Financiamento: Outubro/2024 = 01/60, Novembro/2024 = 02/60, etc.
+      if (norm.includes('financiamento') && (year > 2024 || (year === 2024 && month >= 10))) {
+        const monthsFromOct2024 = (year - 2024) * 12 + (month - 10);
+        if (monthsFromOct2024 >= 0 && monthsFromOct2024 < 60) {
+          const installmentNum = monthsFromOct2024 + 1;
+          const padNum = String(installmentNum).padStart(2, '0');
+          return {
+            ...exp,
+            startDate: '2024-10',
+            installments: `${padNum}/60`
+          };
+        }
+      }
+      return exp;
+    });
+
+    cleaned[mKey] = filtered;
+  });
+
+  return cleaned;
 };
 
 const getPreloadedLogs = (year: number, month: number): DailyLog[] => {
@@ -402,6 +496,12 @@ const sanitizeDailyLog = (l: DailyLog): DailyLog => {
     if (typeof v === 'string') v = parseFloat(v.replace(',', '.'));
     return (typeof v === 'number' && !Number.isNaN(v) && Number.isFinite(v) ? Math.round(v * 100) / 100 : 0);
   };
+
+  const sanitizeNumOrNull = (v: any) => {
+    if (v === undefined || v === null || v === '' || v === -1) return null;
+    if (typeof v === 'string') v = parseFloat(v.replace(',', '.'));
+    return (typeof v === 'number' && !Number.isNaN(v) && Number.isFinite(v) ? Math.round(v * 100) / 100 : null);
+  };
   
   const dateStr = l.date || '';
   const dateMatch = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -411,7 +511,7 @@ const sanitizeDailyLog = (l: DailyLog): DailyLog => {
     ...l,
     id: safeDate,
     date: safeDate,
-    sobrouBateria: sanitizeNum(l.sobrouBateria),
+    sobrouBateria: sanitizeNumOrNull(l.sobrouBateria),
     valorKwh: sanitizeNum(l.valorKwh),
     capacidadeBateria: sanitizeNum(l.capacidadeBateria),
     kmRodado: sanitizeNum(l.kmRodado),
@@ -432,22 +532,22 @@ const sanitizeDailyLog = (l: DailyLog): DailyLog => {
       coffee: sanitizeNum(l.foodExpenses?.coffee)
     },
     appUber: {
-      rides: sanitizeNum(l.appUber?.rides),
-      earnings: sanitizeNum(l.appUber?.earnings),
+      rides: [1.04, 1.05, 5.8].includes(sanitizeNum(l.appUber?.earnings)) ? 0 : sanitizeNum(l.appUber?.rides),
+      earnings: [1.04, 1.05, 5.8].includes(sanitizeNum(l.appUber?.earnings)) ? 0 : sanitizeNum(l.appUber?.earnings),
       bonus: sanitizeNum(l.appUber?.bonus)
     },
     app99: {
-      rides: sanitizeNum(l.app99?.rides),
-      earnings: sanitizeNum(l.app99?.earnings),
+      rides: [1.04, 1.05, 5.8].includes(sanitizeNum(l.app99?.earnings)) ? 0 : sanitizeNum(l.app99?.rides),
+      earnings: [1.04, 1.05, 5.8].includes(sanitizeNum(l.app99?.earnings)) ? 0 : sanitizeNum(l.app99?.earnings),
       bonus: sanitizeNum(l.app99?.bonus)
     },
     appParticular: {
-      rides: sanitizeNum(l.appParticular?.earnings) > 0 ? sanitizeNum(l.appParticular?.rides) : 0,
-      earnings: sanitizeNum(l.appParticular?.earnings)
+      rides: [1.04, 1.05, 5.8].includes(sanitizeNum(l.appParticular?.earnings)) ? 0 : (sanitizeNum(l.appParticular?.earnings) > 0 ? sanitizeNum(l.appParticular?.rides) : 0),
+      earnings: [1.04, 1.05, 5.8].includes(sanitizeNum(l.appParticular?.earnings)) ? 0 : sanitizeNum(l.appParticular?.earnings)
     },
-    recompensasExtra: sanitizeNum(l.recompensasExtra),
-    outrasFontes: sanitizeNum(l.outrasFontes !== undefined ? l.outrasFontes : l.anjo),
-    anjo: sanitizeNum(l.anjo !== undefined ? l.anjo : l.outrasFontes)
+    recompensasExtra: [1.04, 1.05, 5.8].includes(sanitizeNum(l.recompensasExtra)) ? 0 : sanitizeNum(l.recompensasExtra),
+    outrasFontes: [1.04, 1.05, 5.8].includes(sanitizeNum(l.outrasFontes !== undefined ? l.outrasFontes : l.anjo)) ? 0 : sanitizeNum(l.outrasFontes !== undefined ? l.outrasFontes : l.anjo),
+    anjo: [1.04, 1.05, 5.8].includes(sanitizeNum(l.anjo !== undefined ? l.anjo : l.outrasFontes)) ? 0 : sanitizeNum(l.anjo !== undefined ? l.anjo : l.outrasFontes)
   };
 };
 
@@ -501,13 +601,93 @@ const performCalendarSweep = (currentLogs: DailyLog[], targetYear: number): Dail
   return Array.from(logsMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 };
 
+let initialLogsData: { initialLogs: DailyLog[]; initialYear: number; initialMonth: number } | null = null;
+
+function getInitialLogsAndPeriod(): { initialLogs: DailyLog[]; initialYear: number; initialMonth: number } {
+  if (initialLogsData) return initialLogsData;
+
+  const today = new Date();
+  const currentDeviceYear = today.getFullYear();
+  const currentDeviceMonth = today.getMonth() + 1;
+
+  let allStoredLogs: DailyLog[] = [];
+  const cleanSaved = localStorage.getItem('driver_daily_tracker_logs_v_clean');
+  const isInitialized = localStorage.getItem('driver_app_initialized');
+
+  if (cleanSaved) {
+    try {
+      const parsed = JSON.parse(cleanSaved);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        allStoredLogs = performCalendarSweep(parsed, currentDeviceYear);
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // Iniciamos o app sempre 100% limpo e zerado por padrão!
+  if (allStoredLogs.length === 0) {
+    allStoredLogs = generateCleanEmptyYearLogs(currentDeviceYear);
+    localStorage.setItem('driver_app_initialized', 'true');
+    localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(allStoredLogs));
+  }
+
+  // Find the most recent active month/year in logs
+  let activeYear = 0;
+  let activeMonth = 0;
+
+  const activeLogsDesc = [...allStoredLogs]
+    .filter(l => 
+      (l.kmRodado || 0) > 0 || 
+      (l.app99?.earnings || 0) > 0 || 
+      (l.appUber?.earnings || 0) > 0 || 
+      (l.appParticular?.earnings || 0) > 0 ||
+      (l.recompensasExtra || 0) > 0 ||
+      (l.outrasFontes || 0) > 0 ||
+      (l.carExpenses?.wash || 0) > 0 ||
+      (l.carExpenses?.toll || 0) > 0 ||
+      (l.carExpenses?.maintenance || 0) > 0 ||
+      (l.carExpenses?.parking || 0) > 0 ||
+      (l.carExpenses?.publicCharging || 0) > 0 ||
+      (l.carExpenses?.other || 0) > 0 ||
+      (l.foodExpenses?.lunch || 0) > 0 ||
+      (l.foodExpenses?.dinner || 0) > 0 ||
+      (l.foodExpenses?.snacks || 0) > 0 ||
+      (l.foodExpenses?.coffee || 0) > 0
+    )
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  if (activeLogsDesc.length > 0) {
+    const mostRecentActive = activeLogsDesc[0];
+    const parts = mostRecentActive.date.split('-');
+    if (parts.length === 3) {
+      activeYear = parseInt(parts[0], 10);
+      activeMonth = parseInt(parts[1], 10);
+    }
+  }
+
+  if (!activeYear || !activeMonth) {
+    activeYear = currentDeviceYear;
+    activeMonth = currentDeviceMonth;
+  }
+
+  initialLogsData = {
+    initialLogs: allStoredLogs,
+    initialYear: activeYear,
+    initialMonth: activeMonth
+  };
+
+  return initialLogsData;
+}
+
 export default function App() {
+  const initialData = getInitialLogsAndPeriod();
   const today = new Date();
   const currentYear = today.getFullYear();
-  const currentMonth = today.getMonth() + 1; // 1-12
+  const currentMonth = today.getMonth() + 1;
 
-  const [selectedYear, setSelectedYear] = useState<number>(currentYear);
-  const [selectedMonth, setSelectedMonth] = useState<number>(currentMonth);
+  const [selectedYear, setSelectedYear] = useState<number>(initialData.initialYear);
+  const [selectedMonth, setSelectedMonth] = useState<number>(initialData.initialMonth);
   const [isAllYear, setIsAllYear] = useState<boolean>(false);
   const [sweepNotification, setSweepNotification] = useState<string | null>(null);
   const [maintenanceAlert, setMaintenanceAlert] = useState<{ show: boolean, type: '2k' | '1k', remaining: number, currentKm: number, targetKm: number } | null>(null);
@@ -518,25 +698,25 @@ export default function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (parsed && typeof parsed === 'object') {
+        if (parsed && typeof parsed === 'object' && parsed.modelName) {
           return {
             vehicleType: parsed.vehicleType || 'eletrico',
-            modelName: parsed.modelName ?? '',
-            licensePlate: parsed.licensePlate ?? '',
-            manufactureYear: parsed.manufactureYear ?? '',
-            color: parsed.color ?? '',
-            ownershipType: parsed.ownershipType || 'alugado',
-            currentKm: Math.round(parsed.currentKm ?? 0),
-            batteryCapacityKwh: parsed.batteryCapacityKwh ?? 0,
-            estimatedAutonomyKm: parsed.estimatedAutonomyKm ?? 0,
-            kwhCostRate: parsed.kwhCostRate ?? 0,
-            rentalOrWeeklyRate: parsed.rentalOrWeeklyRate ?? 0,
-            monthlyCarExpense: parsed.monthlyCarExpense ?? 0,
-            workScheduleType: parsed.workScheduleType || 'mon_to_sat_sundays_off',
-            customWorkDays: parsed.customWorkDays ?? {},
+            modelName: parsed.modelName ?? DEFAULT_CAR_PROFILE.modelName,
+            licensePlate: parsed.licensePlate ?? DEFAULT_CAR_PROFILE.licensePlate,
+            manufactureYear: parsed.manufactureYear ?? DEFAULT_CAR_PROFILE.manufactureYear,
+            color: parsed.color ?? DEFAULT_CAR_PROFILE.color,
+            ownershipType: parsed.ownershipType || DEFAULT_CAR_PROFILE.ownershipType,
+            currentKm: Math.round(parsed.currentKm ?? DEFAULT_CAR_PROFILE.currentKm),
+            batteryCapacityKwh: parsed.batteryCapacityKwh ?? DEFAULT_CAR_PROFILE.batteryCapacityKwh,
+            estimatedAutonomyKm: parsed.estimatedAutonomyKm ?? DEFAULT_CAR_PROFILE.estimatedAutonomyKm,
+            kwhCostRate: parsed.kwhCostRate ?? DEFAULT_CAR_PROFILE.kwhCostRate,
+            rentalOrWeeklyRate: parsed.rentalOrWeeklyRate ?? DEFAULT_CAR_PROFILE.rentalOrWeeklyRate,
+            monthlyCarExpense: parsed.monthlyCarExpense ?? DEFAULT_CAR_PROFILE.monthlyCarExpense,
+            workScheduleType: parsed.workScheduleType || DEFAULT_CAR_PROFILE.workScheduleType,
+            customWorkDays: parsed.customWorkDays ?? DEFAULT_CAR_PROFILE.customWorkDays,
             insurerName: parsed.insurerName ?? '',
             insurancePolicyNumber: parsed.insurancePolicyNumber ?? '',
-            nextMaintenanceKm: parsed.nextMaintenanceKm ?? '',
+            nextMaintenanceKm: parsed.nextMaintenanceKm ?? DEFAULT_CAR_PROFILE.nextMaintenanceKm,
             notes: parsed.notes ?? ''
           };
         }
@@ -547,13 +727,17 @@ export default function App() {
     return TRULY_BLANK_CAR_PROFILE;
   });
 
-  // Fixed Monthly Expenses State - Inicia 100% zerado, sem despesas pré-carregadas
+  // Fixed Monthly Expenses State - Inicia com dados limpos e saneados
   const [fixedExpensesByMonth, setFixedExpensesByMonth] = useState<Record<string, FixedExpense[]>>(() => {
     const saved = localStorage.getItem('driver_fixed_expenses_v6_by_month');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (typeof parsed === 'object' && parsed !== null) return parsed;
+        if (typeof parsed === 'object' && parsed !== null && Object.keys(parsed).length > 0) {
+          const sanitized = sanitizeFixedExpensesMap(parsed);
+          localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify(sanitized));
+          return sanitized;
+        }
       } catch (e) {
         console.error(e);
       }
@@ -562,38 +746,38 @@ export default function App() {
   });
 
   const currentMonthKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
-  const fixedExpenses = fixedExpensesByMonth[currentMonthKey] || [];
+  const allFixedExpenses = fixedExpensesByMonth[currentMonthKey] || [];
+  const fixedExpenses = allFixedExpenses.filter(exp => {
+    const norm = normalizeExpenseName(exp.name);
+    // Financiamento iniciou estritamente em Outubro de 2024 (2024-10) com a parcela 01/60.
+    // Em Setembro/2024 ou meses anteriores, ele NUNCA deve ser listado.
+    if (norm.includes('financiamento')) {
+      if (selectedYear < 2024 || (selectedYear === 2024 && selectedMonth < 10)) {
+        return false;
+      }
+    }
+    if (!exp.startDate) return true;
+    const [startYear, startMonth] = exp.startDate.split('-').map(Number);
+    if (startYear > selectedYear) return false;
+    if (startYear === selectedYear && startMonth > selectedMonth) return false;
+    return true;
+  });
 
   const getEffectiveMonthlyCost = (year: number, month: number): number => {
     const mKey = `${year}-${String(month).padStart(2, '0')}`;
-    const monthExpenses = fixedExpensesByMonth[mKey] || [];
+    const monthExpenses = (fixedExpensesByMonth[mKey] || []).filter(exp => {
+      const norm = normalizeExpenseName(exp.name);
+      if (norm.includes('financiamento')) {
+        if (year < 2024 || (year === 2024 && month < 10)) return false;
+      }
+      return true;
+    });
     const monthFixedSum = monthExpenses.reduce((sum, item) => sum + item.value, 0);
     return monthFixedSum > 0 ? monthFixedSum : (carProfile.monthlyCarExpense || 0);
   };
 
-  // Store all daily logs - initialized with clean empty logs or saved data
-  const [logs, setLogs] = useState<DailyLog[]>(() => {
-    let allStoredLogs: DailyLog[] = [];
-    
-    // Check if user has explicit saved logs in the clean key
-    const cleanSaved = localStorage.getItem('driver_daily_tracker_logs_v_clean');
-    if (cleanSaved) {
-      try {
-        const parsed = JSON.parse(cleanSaved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          allStoredLogs = performCalendarSweep(parsed, 2026);
-        }
-      } catch (e) {
-        // ignore
-      }
-    }
-
-    if (allStoredLogs.length === 0) {
-      allStoredLogs = generateCleanEmptyYearLogs(2026);
-    }
-
-    return allStoredLogs;
-  });
+  // Store all daily logs - initialized with clean default logs or saved data
+  const [logs, setLogs] = useState<DailyLog[]>(initialData.initialLogs);
 
   // Modal Open/Close States
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -778,9 +962,22 @@ export default function App() {
   }, [sweepNotification]);
 
   // Handle Excel Data Import
-  const handleExcelImport = (importedLogs: DailyLog[], importedFixedExpenses: FixedExpense[] = []) => {
+  const handleExcelImport = (importedLogs: DailyLog[], importedFixedExpenses: FixedExpense[] = [], importedCarProfile?: any) => {
     if (!importedLogs || importedLogs.length === 0) {
-      if (importedFixedExpenses.length === 0) return;
+      if (importedFixedExpenses.length === 0 && !importedCarProfile) return;
+    }
+
+    if (importedCarProfile) {
+      setCarProfile(prev => {
+        const merged = { ...prev };
+        Object.keys(importedCarProfile).forEach(key => {
+          if (importedCarProfile[key] !== undefined && importedCarProfile[key] !== null && importedCarProfile[key] !== '') {
+            (merged as any)[key] = importedCarProfile[key];
+          }
+        });
+        localStorage.setItem('driver_car_profile_v1', JSON.stringify(merged));
+        return merged;
+      });
     }
 
     // Update Logs
@@ -795,17 +992,28 @@ export default function App() {
           if (!newLog.date) return;
           const existing = logsMap.get(newLog.date);
           
+          const isElec = carProfile.vehicleType === 'eletrico';
+          const vKwh = newLog.valorKwh > 0 ? newLog.valorKwh : (carProfile.kwhCostRate || (isElec ? 1.05 : 5.80));
+          const cBat = newLog.capacidadeBateria > 0 ? newLog.capacidadeBateria : (carProfile.batteryCapacityKwh || (isElec ? 53.6 : 50));
+          const estAut = carProfile.estimatedAutonomyKm || (isElec ? 300 : 450);
+
           if (existing) {
             const finalKm = newLog.kmRodado > 0 ? newLog.kmRodado : existing.kmRodado;
+            let finalSobrouBateria = (newLog.sobrouBateria !== undefined && newLog.sobrouBateria !== null && newLog.sobrouBateria > 0)
+              ? newLog.sobrouBateria
+              : (existing.sobrouBateria !== undefined && existing.sobrouBateria !== null && existing.sobrouBateria > 0 ? existing.sobrouBateria : null);
+
+            // Auto-cálculo da sobra de bateria no lançamento em massa sem necessidade de confirmação
+            if (finalKm > 0 && (finalSobrouBateria === null || finalSobrouBateria <= 0)) {
+              const consumedPct = Math.min(100, Math.round((finalKm / estAut) * 100));
+              finalSobrouBateria = Math.max(0, 100 - consumedPct);
+            }
+
             let finalCusto = (newLog.custoEnergia && newLog.custoEnergia > 0) 
               ? newLog.custoEnergia 
               : (existing.custoEnergia > 0 ? existing.custoEnergia : 0);
             if (finalKm > 0 && finalCusto <= 0) {
-              const isElec = carProfile.vehicleType === 'eletrico';
-              const vKwh = carProfile.kwhCostRate || (isElec ? 1.05 : 5.80);
-              const cBat = carProfile.batteryCapacityKwh || (isElec ? 53.6 : 50);
-              const estAut = carProfile.estimatedAutonomyKm || (isElec ? 300 : 450);
-              const consumedPct = Math.min(95, (finalKm / estAut) * 100);
+              const consumedPct = finalSobrouBateria !== null ? Math.max(0, 100 - finalSobrouBateria) : Math.min(100, Math.round((finalKm / estAut) * 100));
               finalCusto = parseFloat(((consumedPct / 100) * cBat * vKwh).toFixed(2));
             }
 
@@ -832,6 +1040,9 @@ export default function App() {
             logsMap.set(newLog.date, {
               ...existing,
               kmRodado: finalKm,
+              sobrouBateria: finalSobrouBateria,
+              valorKwh: existing.valorKwh > 0 ? existing.valorKwh : vKwh,
+              capacidadeBateria: existing.capacidadeBateria > 0 ? existing.capacidadeBateria : cBat,
               custoEnergia: finalCusto,
               appUber: {
                 ...existing.appUber,
@@ -868,6 +1079,21 @@ export default function App() {
             });
           } else {
             const sanitized = sanitizeDailyLog(newLog);
+
+            // Auto-cálculo da sobra de bateria no lançamento em massa sem necessidade de confirmação
+            if (sanitized.kmRodado > 0 && (sanitized.sobrouBateria === null || sanitized.sobrouBateria <= 0)) {
+              const consumedPct = Math.min(100, Math.round((sanitized.kmRodado / estAut) * 100));
+              sanitized.sobrouBateria = Math.max(0, 100 - consumedPct);
+            }
+
+            if (sanitized.kmRodado > 0 && sanitized.custoEnergia <= 0) {
+              const consumedPct = sanitized.sobrouBateria !== null ? Math.max(0, 100 - sanitized.sobrouBateria) : Math.min(100, Math.round((sanitized.kmRodado / estAut) * 100));
+              sanitized.custoEnergia = parseFloat(((consumedPct / 100) * cBat * vKwh).toFixed(2));
+            }
+
+            if (sanitized.valorKwh <= 0) sanitized.valorKwh = vKwh;
+            if (sanitized.capacidadeBateria <= 0) sanitized.capacidadeBateria = cBat;
+
             if (sanitized.appUber.earnings > 0 && sanitized.appUber.rides <= 0) {
               sanitized.appUber.rides = Math.max(1, Math.round(sanitized.appUber.earnings / 23));
             }
@@ -893,32 +1119,29 @@ export default function App() {
     let addedFixedCount = 0;
     if (importedFixedExpenses.length > 0) {
       setFixedExpensesByMonth(prev => {
-        const monthKey = currentMonthKey;
         const updated = { ...prev };
         
-        const existing = updated[monthKey] || [];
-        const combined = [...existing];
-        
         importedFixedExpenses.forEach(imp => {
+          const targetMonth = (imp as any).monthKey || currentMonthKey;
+          const existing = updated[targetMonth] || [];
           const normImp = normalizeExpenseName(imp.name);
-          const alreadyExists = combined.some(e => normalizeExpenseName(e.name) === normImp);
+          const alreadyExists = existing.some(e => normalizeExpenseName(e.name) === normImp);
           if (alreadyExists) {
             // Se já tiver no mês, desconsidere novo lançamento
             ignoredFixedCount++;
           } else {
-            combined.push(imp);
+            updated[targetMonth] = [...existing, imp];
             addedFixedCount++;
           }
         });
         
-        updated[monthKey] = combined;
-        
         // CRITICAL: Update carProfile monthlyCarExpense based on the COMPLETE MERGED LIST
-        const totalFixed = combined.reduce((sum, e) => sum + e.value, 0);
+        const currentMonthList = updated[currentMonthKey] || [];
+        const totalFixed = currentMonthList.reduce((sum, e) => sum + e.value, 0);
         setCarProfile(prev => ({ ...prev, monthlyCarExpense: totalFixed }));
 
         // Recalculate daily rate for all logs in this month
-        const customDays = carProfile.customWorkDays?.[monthKey] || [];
+        const customDays = carProfile.customWorkDays?.[currentMonthKey] || [];
         const { dailyRate } = getMonthWorkDaysAndRate(selectedYear, selectedMonth, totalFixed, customDays);
         setTimeout(() => {
           setLogs(currentLogs => currentLogs.map(log => {
@@ -976,6 +1199,16 @@ export default function App() {
   const [prevDayPromptInfo, setPrevDayPromptInfo] = useState<{ prevDateStr: string; formDate: string } | null>(null);
   const [confirmHighKmPrompt, setConfirmHighKmPrompt] = useState(false);
   const [highKmTargetDate, setHighKmTargetDate] = useState<string>('');
+  const [confirmBatteryEstimatePrompt, setConfirmBatteryEstimatePrompt] = useState(false);
+  const [batteryEstimateInfo, setBatteryEstimateInfo] = useState<{
+    km: number;
+    autonomy: number;
+    consumedPercent: number;
+    remainingPercent: number;
+    energyConsumedKwh: number;
+    estimatedCost: string;
+  } | null>(null);
+  const batteryEstimateDismissedRef = React.useRef(false);
   
   // Rodagem & Bateria States
   const [sobrouBateria, setSobrouBateria] = useState('');
@@ -1026,6 +1259,37 @@ export default function App() {
 
   // Highlighted row inside the table
   const [highlightedRowId, setHighlightedRowId] = useState<string | null>(null);
+
+  // Fast Navigation Refs for Modal Inputs (Bateria -> KM -> 99 Qtd -> 99 Valor -> Uber Qtd -> Uber Valor -> Particular Qtd -> Particular Valor)
+  const sobrouBateriaInputRef = useRef<HTMLInputElement>(null);
+  const kmRodadoInputRef = useRef<HTMLInputElement>(null);
+  const nRidesInputRef = useRef<HTMLInputElement>(null);
+  const nEarningsInputRef = useRef<HTMLInputElement>(null);
+  const nBonusInputRef = useRef<HTMLInputElement>(null);
+  const uRidesInputRef = useRef<HTMLInputElement>(null);
+  const uEarningsInputRef = useRef<HTMLInputElement>(null);
+  const uBonusInputRef = useRef<HTMLInputElement>(null);
+  const pRidesInputRef = useRef<HTMLInputElement>(null);
+  const pEarningsInputRef = useRef<HTMLInputElement>(null);
+
+  const focusNextModalInput = (ref: React.RefObject<HTMLInputElement | null>) => {
+    if (ref.current) {
+      ref.current.focus();
+      try {
+        ref.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        ref.current.select();
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  const handleModalInputNext = (e: React.KeyboardEvent<HTMLInputElement>, targetRef: React.RefObject<HTMLInputElement | null>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      focusNextModalInput(targetRef);
+    }
+  };
 
   // Fixed Monthly Expenses State
   const currentMonthFixedTotal = useMemo(() => {
@@ -1091,6 +1355,7 @@ export default function App() {
   const [isAddingFixed, setIsAddingFixed] = useState(false);
   const [editingFixedId, setEditingFixedId] = useState<string | null>(null);
   const [newFixedName, setNewFixedName] = useState('');
+  const [newFixedStartDate, setNewFixedStartDate] = useState('');
   const [newFixedValue, setNewFixedValue] = useState('');
   const [newFixedInstallments, setNewFixedInstallments] = useState('');
   const [confirmingDeleteFixedId, setConfirmingDeleteFixedId] = useState<string | null>(null);
@@ -1112,7 +1377,13 @@ export default function App() {
   const [isKpisModalOpen, setIsKpisModalOpen] = useState(false);
   const [isEfficiencyModalOpen, setIsEfficiencyModalOpen] = useState(false);
   const [isAppShareModalOpen, setIsAppShareModalOpen] = useState(false);
-  const [isPasteFixedExpensesModalOpen, setIsPasteFixedExpensesModalOpen] = useState(false);
+  const [isPermissionsModalOpen, setIsPermissionsModalOpen] = useState(() => {
+    try {
+      return localStorage.getItem('gkd_permissions_prompted_v1') !== 'true';
+    } catch {
+      return false;
+    }
+  });
 
   // Date / Agenda Picker Modal States (Day, Month, Year selector)
   const [isDatePickerModalOpen, setIsDatePickerModalOpen] = useState(false);
@@ -1125,8 +1396,385 @@ export default function App() {
 
   const fixedExpenseFormRef = React.useRef<HTMLFormElement | null>(null);
   const fixedExpenseInputRef = React.useRef<HTMLInputElement | null>(null);
+  const internalFileInputRef = useRef<HTMLInputElement>(null);
+  const [internalBackupMessage, setInternalBackupMessage] = useState<string | null>(null);
+  const [exportScope, setExportScope] = useState<'all' | 'year' | 'month' | 'week'>('all');
+  const [isExportFolderModalOpen, setIsExportFolderModalOpen] = useState(false);
+  const [isExportingBackup, setIsExportingBackup] = useState(false);
+
+  // Opens the pop-up modal to let the user select where / which folder to save the backup
+  const handleInternalExport = (scopeOverride?: 'all' | 'year' | 'month' | 'week') => {
+    if (scopeOverride) {
+      setExportScope(scopeOverride);
+    }
+    setIsExportFolderModalOpen(true);
+  };
+
+  const handleInternalExportWithTarget = async (
+    targetFolder: 'documents' | 'downloads' | 'system_picker',
+    scopeOverride?: 'all' | 'year' | 'month' | 'week'
+  ) => {
+    setIsExportFolderModalOpen(false);
+    setIsExportingBackup(true);
+    try {
+      const scope = scopeOverride || exportScope;
+      const now = new Date();
+      const day = String(now.getDate()).padStart(2, '0');
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const year = now.getFullYear();
+      const dateStr = `${day}-${month}-${year}`;
+      const jsonFileName = `Backup_Controle_Diario_${dateStr}.json`;
+
+      let filteredLogs = logs;
+      let filteredFixedExpenses = fixedExpensesByMonth;
+
+      if (scope === 'year') {
+        filteredLogs = logs.filter(l => l.date.startsWith(`${selectedYear}-`));
+        const filteredFixed: Record<string, any> = {};
+        Object.keys(fixedExpensesByMonth).forEach(k => {
+          if (k.startsWith(`${selectedYear}-`)) {
+            filteredFixed[k] = fixedExpensesByMonth[k];
+          }
+        });
+        filteredFixedExpenses = filteredFixed;
+      } else if (scope === 'month') {
+        const mKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
+        filteredLogs = logs.filter(l => l.date.startsWith(mKey));
+        filteredFixedExpenses = {
+          [mKey]: fixedExpensesByMonth[mKey] || []
+        };
+      } else if (scope === 'week') {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const targetDate = logs.find(l => l.date === todayStr) ? new Date() : new Date(selectedYear, selectedMonth - 1, 15);
+        const firstDayOfWeek = new Date(targetDate);
+        firstDayOfWeek.setDate(targetDate.getDate() - targetDate.getDay());
+        const lastDayOfWeek = new Date(firstDayOfWeek);
+        lastDayOfWeek.setDate(firstDayOfWeek.getDate() + 6);
+
+        const startStr = firstDayOfWeek.toISOString().slice(0, 10);
+        const endStr = lastDayOfWeek.toISOString().slice(0, 10);
+
+        filteredLogs = logs.filter(l => l.date >= startStr && l.date <= endStr);
+        const mKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
+        filteredFixedExpenses = {
+          [mKey]: fixedExpensesByMonth[mKey] || []
+        };
+      }
+
+      const allLocalStorageData: Record<string, string> = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key) {
+          const val = localStorage.getItem(key);
+          if (val !== null) {
+            allLocalStorageData[key] = val;
+          }
+        }
+      }
+
+      const backupData = {
+        versaoBackup: '2.0',
+        appName: 'GKD Controle Diário',
+        exportScope: scope,
+        exportDate: now.toISOString(),
+        dailyLogs: filteredLogs,
+        fixedExpensesByMonth: filteredFixedExpenses,
+        carProfile,
+        localStorageSnapshot: allLocalStorageData
+      };
+
+      const content = JSON.stringify(backupData, null, 2);
+      const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
+
+      // CASO 1: SELETOR NATIVO DO SISTEMA ("Salvar em...")
+      if (targetFolder === 'system_picker') {
+        // Se for no app nativo Capacitor (Android)
+        if (isCapacitorNative && typeof Filesystem !== 'undefined') {
+          try {
+            await Filesystem.writeFile({
+              path: jsonFileName,
+              data: content,
+              directory: Directory.Cache,
+              encoding: Encoding.UTF8
+            });
+            const fileUri = await Filesystem.getUri({
+              path: jsonFileName,
+              directory: Directory.Cache
+            });
+            await Share.share({
+              title: 'Backup Controle Diário',
+              text: `Backup do Controle Diário (${jsonFileName})`,
+              url: fileUri.uri,
+              dialogTitle: 'Salvar backup em...'
+            });
+            setInternalBackupMessage(`Seletor do sistema aberto para salvar:\n${jsonFileName}`);
+            setTimeout(() => setInternalBackupMessage(null), 6000);
+            return;
+          } catch (shareErr: any) {
+            console.warn('Share nativo falhou, tentando fallback:', shareErr);
+          }
+        }
+
+        // Se for no navegador com suporte a File System Access API (Chrome/Edge/Android Chrome)
+        if ('showSaveFilePicker' in window) {
+          try {
+            const handle = await (window as any).showSaveFilePicker({
+              suggestedName: jsonFileName,
+              types: [{
+                description: 'Arquivo de Backup JSON',
+                accept: { 'application/json': ['.json'] }
+              }]
+            });
+            const writable = await handle.createWritable();
+            await writable.write(content);
+            await writable.close();
+            setInternalBackupMessage(`Sucesso! Salvo na pasta escolhida:\n${jsonFileName}`);
+            setTimeout(() => setInternalBackupMessage(null), 6000);
+            return;
+          } catch (pickerErr: any) {
+            if (pickerErr.name === 'AbortError') {
+              // Cancelado pelo usuário
+              return;
+            }
+            console.warn('showSaveFilePicker falhou:', pickerErr);
+          }
+        }
+
+        // Fallback Web Share API
+        if (typeof navigator !== 'undefined' && navigator.share && typeof File !== 'undefined') {
+          try {
+            const file = new File([content], jsonFileName, { type: 'application/json' });
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+              await navigator.share({
+                title: 'Backup Controle Diário',
+                files: [file]
+              });
+              setInternalBackupMessage(`Arquivo compartilhado com sucesso:\n${jsonFileName}`);
+              setTimeout(() => setInternalBackupMessage(null), 6000);
+              return;
+            }
+          } catch (err: any) {
+            if (err.name === 'AbortError') return;
+          }
+        }
+      }
+
+      // CASO 2: PASTA DOCUMENTOS
+      if (targetFolder === 'documents') {
+        if (isCapacitorNative && typeof Filesystem !== 'undefined') {
+          try {
+            await Filesystem.writeFile({
+              path: jsonFileName,
+              data: content,
+              directory: Directory.Documents,
+              encoding: Encoding.UTF8
+            });
+            setInternalBackupMessage(`Sucesso! Salvo na pasta Documentos:\n${jsonFileName}`);
+            setTimeout(() => setInternalBackupMessage(null), 6000);
+            return;
+          } catch (nativeErr) {
+            console.warn('Filesystem Documentos falhou, fazendo download:', nativeErr);
+          }
+        }
+      }
+
+      // CASO 3: PASTA DOWNLOADS OU DOWNLOAD NAVEGADOR
+      if (isCapacitorNative && typeof Filesystem !== 'undefined') {
+        try {
+          await Filesystem.writeFile({
+            path: jsonFileName,
+            data: content,
+            directory: Directory.Documents,
+            encoding: Encoding.UTF8
+          });
+          setInternalBackupMessage(`Sucesso! Salvo no seu dispositivo:\n${jsonFileName}`);
+          setTimeout(() => setInternalBackupMessage(null), 6000);
+          return;
+        } catch (nativeErr) {
+          console.warn('Filesystem download falhou:', nativeErr);
+        }
+      }
+
+      // Download tradicional do navegador (vai direto para a pasta Downloads padrão)
+      const blob = new Blob([content], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', jsonFileName);
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      const targetMsg = targetFolder === 'downloads' ? 'pasta Downloads' : 'seu dispositivo';
+      setInternalBackupMessage(`Sucesso! Arquivo JSON salvo na ${targetMsg}:\n${jsonFileName}`);
+      setTimeout(() => setInternalBackupMessage(null), 6000);
+    } catch (e: any) {
+      console.error('Erro ao exportar backup interno:', e);
+      setInternalBackupMessage('Erro ao gerar arquivo JSON de backup.');
+      setTimeout(() => setInternalBackupMessage(null), 6000);
+    } finally {
+      setIsExportingBackup(false);
+    }
+  };
+
+  const handleInternalImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      let text = '';
+      const isZip = file.name.endsWith('.zip') || file.type === 'application/zip' || file.type === 'application/x-zip-compressed';
+
+      if (isZip) {
+        const zip = new JSZip();
+        const zipContent = await zip.loadAsync(file);
+        const jsonFileName = Object.keys(zipContent.files).find(filename => filename.endsWith('.json') || !zipContent.files[filename].dir);
+        if (jsonFileName) {
+          text = await zipContent.files[jsonFileName].async('text');
+        } else {
+          throw new Error('Nenhum arquivo JSON encontrado no arquivo ZIP.');
+        }
+      } else {
+        text = await file.text();
+      }
+
+      if (text.startsWith('PK\x03\x04') || text.startsWith('PK\x05\x06')) {
+        const zip = new JSZip();
+        const zipContent = await zip.loadAsync(file);
+        const jsonFileName = Object.keys(zipContent.files).find(filename => filename.endsWith('.json') || !zipContent.files[filename].dir);
+        if (jsonFileName) {
+          text = await zipContent.files[jsonFileName].async('text');
+        }
+      }
+
+      const parsed = JSON.parse(text);
+
+      if (parsed && (Array.isArray(parsed.dailyLogs) || typeof parsed.fixedExpensesByMonth === 'object' || parsed.localStorageSnapshot || Array.isArray(parsed))) {
+        if (parsed.localStorageSnapshot && typeof parsed.localStorageSnapshot === 'object') {
+          for (const [k, v] of Object.entries(parsed.localStorageSnapshot)) {
+            if (typeof v === 'string') {
+              localStorage.setItem(k, v);
+            }
+          }
+        }
+
+        const importedLogs = Array.isArray(parsed) ? parsed : (parsed.dailyLogs || null);
+        const importedFixed = parsed.fixedExpensesByMonth || null;
+        const importedProfile = parsed.carProfile || null;
+
+        if (importedLogs && Array.isArray(importedLogs) && importedLogs.length > 0) {
+          setLogs(importedLogs);
+          localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(importedLogs));
+        }
+
+        if (importedFixed && typeof importedFixed === 'object') {
+          setFixedExpensesByMonth(importedFixed);
+          localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify(importedFixed));
+        }
+
+        if (importedProfile && typeof importedProfile === 'object' && importedProfile.modelName) {
+          setCarProfile(importedProfile);
+          localStorage.setItem('driver_car_profile_v2', JSON.stringify(importedProfile));
+        }
+
+        setInternalBackupMessage('Backup completo importado e restaurado com sucesso! Atualizando sistema...');
+        setTimeout(() => setInternalBackupMessage(null), 6000);
+        setIsHelpModalOpen(false);
+
+        setTimeout(() => {
+          window.location.reload();
+        }, 1500);
+      } else {
+        setInternalBackupMessage('Arquivo de backup inválido ou formato incompatível.');
+        setTimeout(() => setInternalBackupMessage(null), 6000);
+      }
+    } catch (err: any) {
+      console.error('Erro ao importar backup interno:', err);
+      setInternalBackupMessage('Erro ao ler o arquivo de backup (formato incompatível).');
+      setTimeout(() => setInternalBackupMessage(null), 6000);
+    }
+    if (e.target) e.target.value = '';
+  };
+
+  // Auto-hide bottom navigation dock during inputs / editing / modal filling
+  const [isInputActive, setIsInputActive] = useState(false);
+  const [isBottomDockCollapsed, setIsBottomDockCollapsed] = useState(false);
+
+  // Monitor all open modals for scroll locking
+  const isAnyModalOpen = useMemo(() => {
+    return !!(
+      isModalOpen || 
+      isCarModalOpen || 
+      isKpisModalOpen || 
+      isEfficiencyModalOpen || 
+      isAppShareModalOpen || 
+      isExcelImportOpen || 
+      isMultimodalAiOpen || 
+      isAssistantOpen || 
+      isDatePickerModalOpen || 
+      isHelpModalOpen || 
+      isProjectionModalOpen || 
+      isWeeklySummaryOpen || 
+      isConflictModalOpen || 
+      isConfirmClearAllModalOpen || 
+      isDeepSweepModalOpen
+    );
+  }, [
+    isModalOpen, 
+    isCarModalOpen, 
+    isKpisModalOpen, 
+    isEfficiencyModalOpen, 
+    isAppShareModalOpen, 
+    isExcelImportOpen, 
+    isMultimodalAiOpen, 
+    isAssistantOpen, 
+    isDatePickerModalOpen, 
+    isHelpModalOpen, 
+    isProjectionModalOpen, 
+    isWeeklySummaryOpen, 
+    isConflictModalOpen, 
+    isConfirmClearAllModalOpen, 
+    isDeepSweepModalOpen
+  ]);
 
   useEffect(() => {
+    if (isAnyModalOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [isAnyModalOpen]);
+
+  useEffect(() => {
+    const handleFocus = (e: FocusEvent) => {
+      const el = e.target as HTMLElement;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
+        setIsInputActive(true);
+      }
+    };
+    const handleBlur = () => {
+      setTimeout(() => {
+        const active = document.activeElement;
+        if (!active || (active.tagName !== 'INPUT' && active.tagName !== 'TEXTAREA' && active.tagName !== 'SELECT')) {
+          setIsInputActive(false);
+        }
+      }, 150);
+    };
+    window.addEventListener('focus', handleFocus, true);
+    window.addEventListener('blur', handleBlur, true);
+    return () => {
+      window.removeEventListener('focus', handleFocus, true);
+      window.removeEventListener('blur', handleBlur, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    if ((window as any).isClearingAll) return;
     if (logs) {
       localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(logs));
     }
@@ -1159,7 +1807,7 @@ export default function App() {
       // 1. Calculate missing battery/fuel energy cost
       if ((updated.kmRodado || 0) > 0 && (!updated.custoEnergia || updated.custoEnergia <= 0)) {
         let consumedPercent = 0;
-        if (updated.sobrouBateria > 0 && updated.sobrouBateria < 100) {
+        if (updated.sobrouBateria !== null && updated.sobrouBateria !== undefined && updated.sobrouBateria >= 0 && updated.sobrouBateria <= 100) {
           consumedPercent = 100 - updated.sobrouBateria;
         } else {
           consumedPercent = Math.min(95, ((updated.kmRodado || 0) / estAutonomy) * 100);
@@ -1236,6 +1884,7 @@ export default function App() {
   }, [carProfile.vehicleType, carProfile.kwhCostRate, carProfile.batteryCapacityKwh, carProfile.estimatedAutonomyKm, logs]);
 
   useEffect(() => {
+    if ((window as any).isClearingAll) return;
     localStorage.setItem('driver_car_profile_v2', JSON.stringify(carProfile));
   }, [carProfile]);
 
@@ -1269,13 +1918,16 @@ export default function App() {
   }, [carProfile.nextMaintenanceKm, logs]);
 
   useEffect(() => {
-    localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify(fixedExpensesByMonth));
+    if ((window as any).isClearingAll) return;
+    const sanitized = sanitizeFixedExpensesMap(fixedExpensesByMonth);
+    localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify(sanitized));
   }, [fixedExpensesByMonth]);
 
   // Auto-propagation of fixed expenses when a new month is visited
   useEffect(() => {
-    const currentKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
-    const currentExpenses = fixedExpensesByMonth[currentKey];
+    const currentKeyPadded = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
+    const currentKeyUnpadded = `${selectedYear}-${selectedMonth}`;
+    const currentExpenses = fixedExpensesByMonth[currentKeyPadded] || fixedExpensesByMonth[currentKeyUnpadded];
 
     // Only auto-propagate if the month is strictly undefined (never visited/initialized)
     if (!currentExpenses || currentExpenses.length === 0) {
@@ -1321,6 +1973,13 @@ export default function App() {
       if (foundPrevExpenses.length > 0) {
         const monthExpenses: FixedExpense[] = [];
         foundPrevExpenses.forEach(exp => {
+          const norm = normalizeExpenseName(exp.name);
+          // Financiamento iniciou estritamente em Outubro de 2024 (2024-10) com a parcela 01/60.
+          // Em meses anteriores, ele não deve ser propagado!
+          if (norm.includes('financiamento') && (selectedYear < 2024 || (selectedYear === 2024 && selectedMonth < 10))) {
+            return;
+          }
+
           const baseId = exp.id.replace(/^(auto-\d{4}-\d{1,2}-|rep-\d{1,2}-)+/, '');
           
           if (!exp.installments) {
@@ -1339,12 +1998,12 @@ export default function App() {
 
         setFixedExpensesByMonth(prev => ({
           ...prev,
-          [currentKey]: monthExpenses
+          [currentKeyPadded]: monthExpenses
         }));
 
         // Recalculate daily rates for the current month logs
         const totalCost = monthExpenses.reduce((acc, curr) => acc + (curr.value || 0), 0);
-        const customDays = carProfile.customWorkDays?.[currentKey] || [];
+        const customDays = carProfile.customWorkDays?.[currentKeyPadded] || carProfile.customWorkDays?.[currentKeyUnpadded] || [];
         const { dailyRate } = getMonthWorkDaysAndRate(selectedYear, selectedMonth, totalCost, customDays);
 
         setLogs(prevLogs => prevLogs.map(log => {
@@ -1374,7 +2033,7 @@ export default function App() {
         // Mark as initialized with empty array if nothing found
         setFixedExpensesByMonth(prev => ({
           ...prev,
-          [currentKey]: []
+          [currentKeyPadded]: []
         }));
       }
     }
@@ -1491,7 +2150,8 @@ export default function App() {
         ...item,
         name: newFixedName,
         value: val,
-        installments: newFixedInstallments.trim() || undefined
+        installments: newFixedInstallments.trim() || undefined,
+        startDate: newFixedStartDate.trim() || undefined
       } : item));
       setSweepNotification(`Despesa "${newFixedName}" atualizada com sucesso!`);
     } else {
@@ -1503,6 +2163,7 @@ export default function App() {
         setNewFixedName('');
         setNewFixedValue('');
         setNewFixedInstallments('');
+        setNewFixedStartDate('');
         setIsAddingFixed(false);
         return;
       }
@@ -1511,7 +2172,8 @@ export default function App() {
         id: String(Date.now()),
         name: newFixedName,
         value: val,
-        installments: newFixedInstallments.trim() || undefined
+        installments: newFixedInstallments.trim() || undefined,
+        startDate: newFixedStartDate.trim() || undefined
       };
       setFixedExpensesForCurrentMonth(prev => [...prev, newExpense]);
       setSweepNotification(`Despesa "${newFixedName}" adicionada com sucesso!`);
@@ -1530,6 +2192,7 @@ export default function App() {
     setNewFixedName(item.name);
     setNewFixedValue(String(item.value));
     setNewFixedInstallments(item.installments || '');
+    setNewFixedStartDate(item.startDate || '');
     setIsAddingFixed(true);
     setTimeout(() => {
       fixedExpenseFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1543,6 +2206,7 @@ export default function App() {
     setNewFixedName('');
     setNewFixedValue('');
     setNewFixedInstallments('');
+    setNewFixedStartDate('');
   };
 
   const handleDeleteFixedExpense = (id: string) => {
@@ -1698,22 +2362,14 @@ export default function App() {
   // (Automatic override of monthlyCarExpense by fixed expenses removed per user request)
 
   const handleClearAllData = async () => {
-    // 1. Clear all localStorage keys related to this app
-    const keysToRemove = [
-      'driver_daily_tracker_logs_v_clean',
-      'driver_car_profile_v2',
-      'driver_fixed_expenses_v6_by_month'
-    ];
+    // Bloqueia qualquer auto-save assíncrono do React que tente reescrever os dados antigos de volta no localStorage
+    (window as any).isClearingAll = true;
 
-    keysToRemove.forEach(k => localStorage.removeItem(k));
+    // 1. Limpa absolutamente todo o localStorage do aplicativo
+    localStorage.clear();
 
-    // Also clear any other keys that might be related to previous versions
-    for (let i = localStorage.length - 1; i >= 0; i--) {
-      const k = localStorage.key(i);
-      if (k && (k.includes('driver_') || k.includes('tracker'))) {
-        localStorage.removeItem(k);
-      }
-    }
+    // Set initialized to true so it stays clean and doesn't re-populate demo data
+    localStorage.setItem('driver_app_initialized', 'true');
 
     // 2. Reset states to initial/clean values
     const cleanLogs = generateCleanEmptyYearLogs(selectedYear);
@@ -1721,10 +2377,19 @@ export default function App() {
     setCarProfile(TRULY_BLANK_CAR_PROFILE);
     setFixedExpensesByMonth({});
 
+    // Write empty states directly and synchronously to prevent race conditions or blank state issues
+    localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(cleanLogs));
+    localStorage.setItem('driver_car_profile_v2', JSON.stringify(TRULY_BLANK_CAR_PROFILE));
+    localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify({}));
+
     setIsConfirmClearAllModalOpen(false);
     setIsHelpModalOpen(false);
     setSweepNotification('Todos os dados foram apagados com sucesso! Veículo, contas fixas e lançamentos zerados.');
-    setTimeout(() => setSweepNotification(null), 8000);
+    
+    // Força a sincronização do banco de dados do WebView no Android recarregando a página
+    setTimeout(() => {
+      window.location.reload();
+    }, 150);
   };
 
   const handleDeepSweep = async () => {
@@ -1749,11 +2414,13 @@ export default function App() {
       return sanitized;
     });
 
-    // 1b. Cleanup invalid fixed expenses (labels like 'null', 'undefined', or purely numbers)
-    const updatedFixed = { ...fixedExpensesByMonth };
+    // 1b. Cleanup invalid fixed expenses and sanitize installments
+    const cleanedFixed = sanitizeFixedExpensesMap(fixedExpensesByMonth);
     let fixedSanitizedCount = 0;
-    Object.keys(updatedFixed).forEach(monthYear => {
-      const originalList = updatedFixed[monthYear];
+    const updatedFixed: Record<string, FixedExpense[]> = {};
+
+    Object.keys(cleanedFixed).forEach(monthYear => {
+      const originalList = cleanedFixed[monthYear];
       const filteredList = originalList.filter(exp => {
         const label = String(exp.name).toLowerCase().trim();
         const isInvalid = ['null', 'undefined', 'nan', ''].includes(label) || /^\d+([.,]\d+)?$/.test(label);
@@ -1907,8 +2574,10 @@ export default function App() {
         newCost = calcByBattery() || calcByKm();
       }
 
-      if (newCost !== null) {
+      if (newCost !== null && (sobrouBateria !== '' || kmRodado !== '')) {
         setCustoEnergia(newCost);
+      } else if (!isEnergyCostOverridden) {
+        setCustoEnergia('');
       }
     }
   }, [sobrouBateria, capacidadeBateria, valorKwh, kmRodado, isEnergyCostOverridden, carProfile, lastEditedEnergyField]);
@@ -1922,11 +2591,12 @@ export default function App() {
     const dayOfWeek = dateObj.getDay(); // 0 = Domingo
     const isSunday = dayOfWeek === 0;
 
-    const monthKey = `${y}-${String(m).padStart(2, '0')}`;
-    const customDays = carProfile.customWorkDays?.[monthKey] || [];
+    const monthKeyPadded = `${y}-${String(m).padStart(2, '0')}`;
+    const monthKeyUnpadded = `${y}-${m}`;
+    const customDays = carProfile.customWorkDays?.[monthKeyPadded] || carProfile.customWorkDays?.[monthKeyUnpadded] || [];
     const isCustomWorkingDay = (customDays && customDays.length > 0) ? customDays.includes(d) : (new Date(y, m - 1, d).getDay() !== 0);
 
-    const mExpenses = fixedExpensesByMonth[monthKey] || [];
+    const mExpenses = fixedExpensesByMonth[monthKeyPadded] || fixedExpensesByMonth[monthKeyUnpadded] || [];
     const mTotal = mExpenses.reduce((acc, curr) => acc + (curr.value || 0), 0);
     const effectiveCost = carProfile.monthlyCarExpense || 0;
 
@@ -1972,15 +2642,15 @@ export default function App() {
       setSnacks(existing.foodExpenses?.snacks && existing.foodExpenses.snacks > 0 ? String(existing.foodExpenses.snacks) : '');
       setCoffee(existing.foodExpenses?.coffee && existing.foodExpenses.coffee > 0 ? String(existing.foodExpenses.coffee) : '');
 
-      setURides(existing.appUber.rides !== undefined ? String(existing.appUber.rides) : '');
+      setURides(existing.appUber.rides && existing.appUber.rides > 0 ? String(existing.appUber.rides) : '');
       setUEarnings(existing.appUber.earnings && existing.appUber.earnings > 0 ? String(existing.appUber.earnings) : '');
       setUBonus(existing.appUber.bonus && existing.appUber.bonus > 0 ? String(existing.appUber.bonus) : '');
 
-      setNRides(existing.app99.rides !== undefined ? String(existing.app99.rides) : '');
+      setNRides(existing.app99.rides && existing.app99.rides > 0 ? String(existing.app99.rides) : '');
       setNEarnings(existing.app99.earnings && existing.app99.earnings > 0 ? String(existing.app99.earnings) : '');
       setNBonus(existing.app99.bonus && existing.app99.bonus > 0 ? String(existing.app99.bonus) : '');
 
-      setPRides(existing.appParticular.rides !== undefined ? String(existing.appParticular.rides) : '');
+      setPRides(existing.appParticular.rides && existing.appParticular.rides > 0 ? String(existing.appParticular.rides) : '');
       setPEarnings(existing.appParticular.earnings && existing.appParticular.earnings > 0 ? String(existing.appParticular.earnings) : '');
 
       setRecompensasExtra(existing.recompensasExtra && existing.recompensasExtra > 0 ? String(existing.recompensasExtra) : '');
@@ -2086,8 +2756,9 @@ export default function App() {
   // Batch apply calculated daily rate to all working days of a specific month
   const handleApplyMonthlyCarRateToAllDays = (monthToApply: number, yearToApply: number, customMonthlyTotal?: number) => {
     // If customMonthlyTotal not passed, check if there are fixed expenses in that month
-    const mKey = `${yearToApply}-${monthToApply}`;
-    const monthExpenses = fixedExpensesByMonth[mKey] || [];
+    const mKeyPadded = `${yearToApply}-${String(monthToApply).padStart(2, '0')}`;
+    const mKeyUnpadded = `${yearToApply}-${monthToApply}`;
+    const monthExpenses = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
     const monthFixedSum = monthExpenses.reduce((sum, item) => sum + item.value, 0);
 
     const costToUse = (typeof customMonthlyTotal === 'number' && customMonthlyTotal >= 0)
@@ -2125,7 +2796,7 @@ export default function App() {
           
           if ((log.kmRodado || 0) > 0) {
             let consumedPercent = 0;
-            if (log.sobrouBateria > 0 && log.sobrouBateria < 100) {
+            if (log.sobrouBateria !== null && log.sobrouBateria !== undefined && log.sobrouBateria >= 0 && log.sobrouBateria <= 100) {
               consumedPercent = 100 - log.sobrouBateria;
             } else {
               consumedPercent = Math.min(95, ((log.kmRodado || 0) / (carProfile.estimatedAutonomyKm || (isEletrico ? 300 : 450))) * 100);
@@ -2152,6 +2823,37 @@ export default function App() {
     setTimeout(() => setSweepNotification(null), 5000);
   };
 
+  // Batch clear car extra expenses for a specific month (e.g. phantom imported expenses)
+  const handleClearMonthCarExpenses = (monthToClear: number, yearToClear: number) => {
+    const confirm = window.confirm(`Deseja zerar todas as Despesas Extras de Carro (lava-jato, pedágios, estacionamento, recarga externa e outros) do mês de ${MONTH_NAMES[monthToClear - 1]}/${yearToClear}?`);
+    if (!confirm) return;
+
+    setLogs(prevLogs => {
+      const updated = prevLogs.map(log => {
+        const [y, m] = log.date.split('-').map(Number);
+        if (y === yearToClear && m === monthToClear) {
+          return {
+            ...log,
+            carExpenses: {
+              wash: 0,
+              toll: 0,
+              maintenance: 0,
+              parking: 0,
+              publicCharging: 0,
+              other: 0
+            }
+          };
+        }
+        return log;
+      });
+      localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(updated));
+      return updated;
+    });
+
+    setSweepNotification(`Despesas extras de carro de ${MONTH_NAMES[monthToClear - 1]}/${yearToClear} foram zeradas com sucesso!`);
+    setTimeout(() => setSweepNotification(null), 5000);
+  };
+
   // Open modal for a specific date
   const openModalForDate = (dateStr: string) => {
     handleDateChange(dateStr);
@@ -2159,6 +2861,9 @@ export default function App() {
     setModalDeleteStage(0);
     setConfirmPrevDayPrompt(false);
     setPrevDayPromptInfo(null);
+    setConfirmBatteryEstimatePrompt(false);
+    setBatteryEstimateInfo(null);
+    batteryEstimateDismissedRef.current = false;
     setErrorMessage('');
     setTimeout(() => {
       handleLoadCarDataIntoEntry();
@@ -2228,6 +2933,36 @@ export default function App() {
     setTimeout(() => setSweepNotification(null), 4000);
   };
 
+  // Trigger Battery Estimate Pop-up Modal when KM is added without remaining battery
+  const triggerBatteryEstimatePopup = (customKm?: number): boolean => {
+    const num = customKm !== undefined ? customKm : (parseInt(String(kmRodado), 10) || 0);
+    const sobrouVal = String(sobrouBateria || '').trim();
+    const sobrouNum = parseFloat(sobrouVal.replace(',', '.'));
+    
+    // Only trigger if KM is valid and remaining battery is not provided or 0
+    if (num > 0 && (!sobrouVal || isNaN(sobrouNum) || sobrouNum === 0)) {
+      const capNum = parseFloat(String(capacidadeBateria).replace(',', '.')) || parseFloat(carProfile.batteryCapacityKwh) || (carProfile.vehicleType === 'eletrico' ? 53.6 : 50);
+      const valKwhNum = parseFloat(String(valorKwh).replace(',', '.')) || parseFloat(carProfile.kwhCostRate) || (carProfile.vehicleType === 'eletrico' ? 1.05 : 5.80);
+      const autonomy = carProfile.estimatedAutonomyKm || (carProfile.vehicleType === 'eletrico' ? 300 : 500);
+      const consumedPercent = Math.min(100, Math.round((num / autonomy) * 100));
+      const remainingPercent = Math.max(0, 100 - consumedPercent);
+      const energyConsumedKwh = Math.round(((consumedPercent / 100) * capNum) * 100) / 100;
+      const estimatedCost = (energyConsumedKwh * valKwhNum).toFixed(2);
+
+      setBatteryEstimateInfo({
+        km: num,
+        autonomy,
+        consumedPercent,
+        remainingPercent,
+        energyConsumedKwh,
+        estimatedCost
+      });
+      setConfirmBatteryEstimatePrompt(true);
+      return true;
+    }
+    return false;
+  };
+
   // Form Submit / Save
   const handleSaveLog = (e: React.FormEvent) => {
     e.preventDefault();
@@ -2264,6 +2999,12 @@ export default function App() {
       }
     }
 
+    if (!confirmBatteryEstimatePrompt && !batteryEstimateDismissedRef.current) {
+      if (triggerBatteryEstimatePopup()) {
+        return;
+      }
+    }
+
     executeSaveLog(formDate);
   };
 
@@ -2285,14 +3026,14 @@ export default function App() {
     setConfirmHighKmPrompt(false);
     setHighKmTargetDate('');
 
-    const parsedSobrou = parseNum(sobrouBateria);
+    const parsedSobrou = sobrouBateria === '' || sobrouBateria === null || sobrouBateria === undefined ? null : parseNum(sobrouBateria);
     let finalCustoEnergia = parseNum(custoEnergia);
     const parsedValKwh = parseNum(valorKwh) || parseFloat(carProfile.kwhCostRate) || 1.05;
     const parsedCap = parseNum(capacidadeBateria) || parseFloat(carProfile.batteryCapacityKwh) || 53.6;
 
     // Only auto-calculate if not overridden by user and value is empty/zero
     if (parsedKm > 0 && !isEnergyCostOverridden && finalCustoEnergia <= 0) {
-      const consumedPercent = parsedSobrou > 0 && parsedSobrou < 100 ? (100 - parsedSobrou) : Math.min(95, (parsedKm / (carProfile.estimatedAutonomyKm || 300)) * 100);
+      const consumedPercent = (parsedSobrou !== null && parsedSobrou >= 0 && parsedSobrou <= 100) ? (100 - parsedSobrou) : Math.min(95, (parsedKm / (carProfile.estimatedAutonomyKm || 300)) * 100);
       const energyConsumed = (consumedPercent / 100) * parsedCap;
       finalCustoEnergia = parseFloat((energyConsumed * parsedValKwh).toFixed(2));
     }
@@ -2495,13 +3236,14 @@ export default function App() {
     const totalFixedExpenses = isAllYear 
       ? Array.from(new Set(filteredLogs.map(l => l.date.slice(0, 7)))).reduce((acc: number, monthStr: string) => {
           const [y, m] = monthStr.split('-').map(Number);
-          const mKey = `${y}-${m}`;
-          const mList = fixedExpensesByMonth[mKey] || [];
+          const mKeyPadded = `${y}-${String(m).padStart(2, '0')}`;
+          const mKeyUnpadded = `${y}-${m}`;
+          const mList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
           return acc + mList.reduce((sum, item) => sum + item.value, 0);
         }, 0)
       : fixedExpenses.reduce((sum, item) => sum + item.value, 0);
 
-    const effectiveFixedCosts = totalCarRental + totalFixedExpenses;
+    const effectiveFixedCosts = totalFixedExpenses > 0 ? totalFixedExpenses : totalCarRental;
     const totalCosts = totalVariableCosts + effectiveFixedCosts;
 
     // Total daily operational net (exact sum of all table row nets)
@@ -2689,11 +3431,19 @@ export default function App() {
           const foodExpensesSum = (Object.values(log.foodExpenses) as number[]).reduce((a, b) => a + b, 0);
           cost += log.custoEnergia + log.diariaCarro + carExpensesSum + foodExpensesSum;
         });
+        const mKeyPadded = `${selectedYear}-${String(mNum).padStart(2, '0')}`;
+        const mKeyUnpadded = `${selectedYear}-${mNum}`;
+        const mFixedList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
+        const mFixedSum = mFixedList.reduce((sum, item) => sum + item.value, 0);
+
+        const mTotalFixed = mFixedSum > 0 ? mFixedSum : mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0);
+        const mTotalCosts = (cost - mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0)) + mTotalFixed;
+
         return {
           name: MONTH_NAMES[i].slice(0, 3),
           Faturamento: gross,
-          Custos: cost,
-          Lucro: gross - cost
+          Custos: mTotalCosts,
+          Lucro: gross - mTotalCosts
         };
       });
     }
@@ -2736,12 +3486,19 @@ export default function App() {
       const opGross = monthLogs.reduce((acc, l) => acc + (l.appUber.earnings || 0) + (l.appUber.bonus || 0) + (l.app99.earnings || 0) + (l.app99.bonus || 0) + (l.appParticular.earnings || 0) + (l.recompensasExtra || 0), 0);
       const anjoTotal = monthLogs.reduce((acc, l) => acc + (l.outrasFontes || 0), 0);
       const gross = opGross + anjoTotal;
-      const varCosts = monthLogs.reduce((acc, l) => acc + (l.custoEnergia || 0) + (l.diariaCarro || 0) + (l.carExpenses.wash + l.carExpenses.toll + l.carExpenses.maintenance + l.carExpenses.parking + l.carExpenses.other) + (l.foodExpenses.lunch + l.foodExpenses.dinner + l.foodExpenses.snacks + l.foodExpenses.coffee), 0);
-      const mFixedList = fixedExpensesByMonth[`${selectedYear}-${monthNum}`] || [];
-      const fixedVal = mFixedList.reduce((acc, f) => acc + f.value, 0);
+      const mKeyPadded = `${selectedYear}-${String(monthNum).padStart(2, '0')}`;
+      const mKeyUnpadded = `${selectedYear}-${monthNum}`;
+      const mFixedList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
+      const mFixedSum = mFixedList.reduce((sum, item) => sum + item.value, 0);
+      
+      const mLogsDiariaSum = monthLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0);
+      const mEffectiveFixed = mFixedSum > 0 ? mFixedSum : mLogsDiariaSum;
+
+      const varCosts = monthLogs.reduce((acc, l) => acc + (l.custoEnergia || 0) + (l.carExpenses.wash + l.carExpenses.toll + l.carExpenses.maintenance + l.carExpenses.parking + l.carExpenses.other) + (l.foodExpenses.lunch + l.foodExpenses.dinner + l.foodExpenses.snacks + l.foodExpenses.coffee), 0);
+      
       const km = monthLogs.reduce((acc, l) => acc + (l.kmRodado || 0), 0);
       const rides = monthLogs.reduce((acc, l) => acc + (l.appUber.rides || 0) + (l.app99.rides || 0) + (l.appParticular.rides || 0), 0);
-      const workDays = monthLogs.filter(l => !l.isDayOff && ((l.kmRodado || 0) > 0 || (l.appUber.earnings || 0) > 0 || (l.app99.earnings || 0) > 0)).length;
+      const workDays = monthLogs.filter(l => !l.isOff && ((l.kmRodado || 0) > 0 || (l.appUber.earnings || 0) > 0 || (l.app99.earnings || 0) > 0)).length;
 
       return {
         monthNum,
@@ -2751,8 +3508,8 @@ export default function App() {
         opGross,
         anjoTotal,
         varCosts,
-        fixedVal,
-        net: gross - varCosts - fixedVal,
+        fixedVal: mEffectiveFixed,
+        net: gross - varCosts - mEffectiveFixed,
         km,
         rides,
         workDays
@@ -3007,7 +3764,7 @@ export default function App() {
     <div className="min-h-screen bg-[#070709] text-zinc-100 selection:bg-emerald-500/20 selection:text-emerald-300 font-sans antialiased overscroll-y-none">
       
       {/* Dynamic Header */}
-      <header id="main-app-header" className="border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-md sticky top-0 z-30 px-3 sm:px-6 py-3 transition-all relative overflow-x-hidden">
+      <header id="main-app-header" className="border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-md relative z-20 px-3 sm:px-6 py-3 transition-all overflow-x-hidden">
         <div className="max-w-7xl mx-auto flex flex-wrap sm:flex-nowrap items-center justify-between gap-3 sm:gap-4">
           
           <div className="flex items-center justify-between w-full sm:w-auto gap-2">
@@ -3138,6 +3895,7 @@ export default function App() {
         isOpen={isExcelImportOpen}
         onClose={() => setIsExcelImportOpen(false)} onBack={() => { setIsExcelImportOpen(false); setIsHelpModalOpen(true); }}
         onImportData={handleExcelImport}
+        carProfile={carProfile}
       />
 
       {isMultimodalAiOpen && (
@@ -3165,7 +3923,7 @@ export default function App() {
       )}
 
       {/* Main Container */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-8 pb-32">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-8 pb-32 sm:pb-36">
 
         {/* Sweep Notification Banner */}
         {sweepNotification && (
@@ -3261,9 +4019,25 @@ export default function App() {
                   <th className="py-3 px-3 sticky top-0 left-0 z-30 bg-[#121215] border-b border-r border-zinc-800">Data</th>
                   <th className="py-3 px-3 text-center sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Status</th>
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">KM Rodados</th>
+                  <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Bateria Rest.</th>
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">{carProfile.vehicleType === 'eletrico' ? 'Custo Bateria' : 'Custo Combustível'}</th>
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Diária Carro</th>
-                  <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Desp. Extras Carro</th>
+                  <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">
+                    <div className="flex items-center justify-end gap-1.5 group/th">
+                      <span>Desp. Extras Carro</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleClearMonthCarExpenses(selectedMonth, selectedYear);
+                        }}
+                        className="opacity-0 group-hover/th:opacity-100 p-1 text-zinc-500 hover:text-rose-400 hover:bg-zinc-800/80 rounded transition-all cursor-pointer"
+                        title={`Zerar / Limpar Despesas Extras Fantasma de ${MONTH_NAMES[selectedMonth - 1]}/${selectedYear}`}
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </th>
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Alimentação</th>
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Qtd 99</th>
                   <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Lucro 99</th>
@@ -3276,15 +4050,15 @@ export default function App() {
                     <div>Anjo</div>
                     <div className="text-[8px] font-normal text-amber-500/70 lowercase">recebidos</div>
                   </th>
-                  <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Fat. Bruto</th>
-                  <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Resultado Líquido</th>
+                  <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800 text-blue-400">Fat. Bruto</th>
+                  <th className="py-3 px-3 text-right sticky top-0 z-20 bg-[#121215] border-b border-zinc-800 text-emerald-400">Resultado Líquido</th>
                   <th className="py-3 px-3 text-center sticky top-0 z-20 bg-[#121215] border-b border-zinc-800">Ações</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-850 text-zinc-300">
                 {filteredLogs.length === 0 ? (
                   <tr>
-                    <td colSpan={18} className="py-12 text-center text-zinc-500">
+                    <td colSpan={19} className="py-12 text-center text-zinc-500">
                       Nenhum dia lançado neste mês. Clique em "Registrar Dia" para começar.
                     </td>
                   </tr>
@@ -3326,7 +4100,7 @@ export default function App() {
                           <div className={`font-bold ${isHighlighted ? 'text-emerald-300' : 'text-zinc-100'}`}>
                             {log.date.split('-').reverse().slice(0, 2).join('/')}
                           </div>
-                          <div className={`text-[10px] ${isHighlighted ? 'text-emerald-400 font-semibold' : 'text-zinc-550'}`}>
+                          <div className={`text-[10px] ${isHighlighted ? 'text-blue-400 font-semibold' : 'text-zinc-550'}`}>
                             {WEEK_DAYS[new Date(log.date + 'T00:00:00').getDay()]}
                           </div>
                         </td>
@@ -3336,7 +4110,7 @@ export default function App() {
                               Folga Trabalhada
                             </span>
                           ) : isOff ? (
-                            <span className="inline-flex px-2 py-0.5 rounded-full text-[9px] font-bold bg-zinc-800 text-zinc-400 border border-zinc-700/50 uppercase">
+                            <span className="inline-flex px-2 py-0.5 rounded-full text-[9px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30 uppercase">
                               Folga
                             </span>
                           ) : (
@@ -3348,13 +4122,23 @@ export default function App() {
                         <td className="py-3 px-3 text-right font-mono text-zinc-300">
                           {formatKM(log.kmRodado)}
                         </td>
+                        <td className="py-3 px-3 text-right font-mono text-zinc-300">
+                          {log.sobrouBateria !== null && log.sobrouBateria !== undefined && log.sobrouBateria >= 0 ? `${log.sobrouBateria}%` : '-'}
+                        </td>
                         <td className="py-3 px-3 text-right font-mono text-amber-500/90">
                           {formatBRL(log.custoEnergia)}
                         </td>
                         <td className="py-3 px-3 text-right font-mono text-zinc-400">
                           {formatBRL(log.diariaCarro)}
                         </td>
-                        <td className="py-3 px-3 text-right font-mono text-zinc-400">
+                        <td 
+                          className="py-3 px-3 text-right font-mono text-zinc-400"
+                          title={
+                            carExpensesSum > 0 
+                              ? `Detalhamento: Lava-jato: ${formatBRL(log.carExpenses?.wash || 0)} | Pedágio: ${formatBRL(log.carExpenses?.toll || 0)} | Estac.: ${formatBRL(log.carExpenses?.parking || 0)} | Recarga Ext.: ${formatBRL(log.carExpenses?.publicCharging || 0)} | Manutenção: ${formatBRL(log.carExpenses?.maintenance || 0)} | Outros: ${formatBRL(log.carExpenses?.other || 0)}`
+                              : 'Sem despesas extras de carro'
+                          }
+                        >
                           {formatBRL(carExpensesSum)}
                         </td>
                         <td className="py-3 px-3 text-right font-mono text-zinc-400">
@@ -3384,10 +4168,10 @@ export default function App() {
                         <td className="py-3 px-3 text-right font-mono text-amber-400 font-medium" title="Recebido (não soma no dia, conta no consolidado do mês)">
                           {anjo ? formatBRL(anjo) : '-'}
                         </td>
-                        <td className="py-3 px-3 text-right font-mono text-emerald-400 font-semibold">
+                        <td className="py-3 px-3 text-right font-mono text-blue-400 font-semibold">
                           {formatBRL(gross)}
                         </td>
-                        <td className={`py-3 px-3 text-right font-mono font-bold ${net >= 0 ? 'text-blue-400' : 'text-red-400'}`}>
+                        <td className={`py-3 px-3 text-right font-mono font-bold ${net >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                           {formatBRL(net)}
                         </td>
                         <td className="py-3 px-3 text-center min-w-[130px]">
@@ -3573,98 +4357,202 @@ export default function App() {
           
           {/* Calendar Heatmap/Overview Grid (Span 8/12) */}
           <div className="lg:col-span-8 bg-zinc-900/80 border border-zinc-800 rounded-2xl overflow-hidden shadow-lg transition-all">
-            <div className="w-full flex items-center justify-between p-5 bg-zinc-900 border-b border-zinc-800/80">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl">
-                  <CalendarIcon className="w-5 h-5" />
+            <div className="w-full flex items-center justify-between p-3 bg-zinc-900 border-b border-zinc-800/80">
+                <div className="flex items-center gap-3">
+                <div className="p-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl">
+                  <CalendarIcon className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="text-base font-semibold text-zinc-100 flex items-center gap-2">
+                  <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
                     {isAllYear ? `Resumo Mês a Mês (${selectedYear})` : 'Agenda e Ganhos Diários'}
                   </h3>
                   <p className="text-xs text-zinc-400">
                     {isAllYear 
                       ? 'Clique em qualquer mês para ver os detalhes diários ou alterar o período.' 
-                      : 'Calendário completo do mês. Clique em qualquer dia para adicionar ou editar o registro.'}
+                      : ''}
                   </p>
                 </div>
               </div>
+              <button
+                onClick={() => setIsAllYear(!isAllYear)}
+                className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-all"
+              >
+                {isAllYear ? 'Ver Mês Atual' : 'Ver Calendário Completo'}
+              </button>
             </div>
 
-            <div className="p-5 sm:p-6 space-y-4">
+            <div className="p-3 sm:p-4 space-y-2">
                 <div className="flex justify-between items-center">
-                  {!isAllYear && (
-                    <div className="flex flex-wrap gap-2 text-[10px]">
-                      <span className="flex items-center gap-1.5 text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-lg">
-                        <span className="w-2 h-2 bg-emerald-400 rounded-full inline-block shadow-sm shadow-emerald-400" /> ≥ R$500 (Meta Atingida)
-                      </span>
-                      <span className="flex items-center gap-1.5 text-rose-400 font-bold bg-rose-500/10 border border-rose-500/20 px-2.5 py-1 rounded-lg">
-                        <span className="w-2 h-2 bg-rose-400 rounded-full inline-block shadow-sm shadow-rose-400" /> &lt; R$500 (Abaixo da Meta)
-                      </span>
-                      <span className="flex items-center gap-1.5 text-amber-400 font-bold bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-lg">
-                        <span className="w-2 h-2 bg-amber-400 rounded-full inline-block shadow-sm shadow-amber-400" /> Folga
-                      </span>
-                    </div>
-                  )}
+                  {!isAllYear && ( <></> )}
                 </div>
 
                 {isAllYear ? (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-2">
-                    {Array.from({ length: 12 }, (_, i) => {
-                      const mNum = i + 1;
-                      const mLogs = logs.filter(l => {
-                        const [y, m] = l.date.split('-').map(Number);
-                        return y === selectedYear && m === mNum;
-                      });
-                      if (mLogs.length === 0) return null;
+                  <div className="space-y-3 pt-2">
+                    {/* Consolidated Annual Summary Bar */}
+                    {(() => {
+                      let yearGross = 0;
+                      let yearAnjo = 0;
+                      let yearTotalCosts = 0;
+                      let yearNet = 0;
+                      let activeMonthsCount = 0;
 
-                      let mGross = 0;
-                      let mCosts = 0;
-                      let mRides = 0;
-                      mLogs.forEach(l => {
-                        if (l.exibirNoGeral) {
-                          const uTotal = l.appUber.earnings + l.appUber.bonus;
-                          const nTotal = l.app99.earnings + l.app99.bonus;
-                          const pTotal = l.appParticular.earnings;
-                          mGross += uTotal + nTotal + pTotal + (l.recompensasExtra || 0) + (l.outrasFontes || 0);
-                          mRides += l.appUber.rides + l.app99.rides + l.appParticular.rides;
-                        }
-                        const dayCarExp = (Object.values(l.carExpenses) as number[]).reduce((a, b) => a + b, 0);
-                        const dayFoodExp = (Object.values(l.foodExpenses) as number[]).reduce((a, b) => a + b, 0);
-                        mCosts += l.custoEnergia + l.diariaCarro + dayCarExp + dayFoodExp;
-                      });
-                      const mNet = mGross - mCosts;
+                      for (let m = 1; m <= 12; m++) {
+                        const mLogs = logs.filter(l => {
+                          const [y, mNum] = l.date.split('-').map(Number);
+                          return y === selectedYear && mNum === m;
+                        });
+                        if (mLogs.length === 0) continue;
+                        activeMonthsCount++;
+
+                        let mGross = 0;
+                        let mCosts = 0;
+                        let mAnjo = 0;
+                        mLogs.forEach(l => {
+                          if (l.exibirNoGeral) {
+                            const uTotal = l.appUber.earnings + l.appUber.bonus;
+                            const nTotal = l.app99.earnings + l.app99.bonus;
+                            const pTotal = l.appParticular.earnings;
+                            const dayAnjo = l.anjo !== undefined ? l.anjo : (l.outrasFontes || 0);
+                            mAnjo += dayAnjo;
+                            mGross += uTotal + nTotal + pTotal + (l.recompensasExtra || 0) + dayAnjo;
+                          }
+                          const dayCarExp = (Object.values(l.carExpenses) as number[]).reduce((a, b) => a + b, 0);
+                          const dayFoodExp = (Object.values(l.foodExpenses) as number[]).reduce((a, b) => a + b, 0);
+                          mCosts += l.custoEnergia + l.diariaCarro + dayCarExp + dayFoodExp;
+                        });
+
+                        const mKeyPadded = `${selectedYear}-${String(m).padStart(2, '0')}`;
+                        const mKeyUnpadded = `${selectedYear}-${m}`;
+                        const mFixedList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
+                        const mFixedSum = mFixedList.reduce((sum, item) => sum + item.value, 0);
+                        const mLogsDiariaSum = mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0);
+                        const mEffectiveFixed = mFixedSum > 0 ? mFixedSum : mLogsDiariaSum;
+                        const mTotalCosts = (mCosts - mLogsDiariaSum) + mEffectiveFixed;
+                        const mNet = mGross - mTotalCosts;
+
+                        yearGross += mGross;
+                        yearAnjo += mAnjo;
+                        yearTotalCosts += mTotalCosts;
+                        yearNet += mNet;
+                      }
+
+                      if (activeMonthsCount === 0) return null;
 
                       return (
-                        <div 
-                          key={mNum}
-                          onClick={() => {
-                            setSelectedMonth(mNum);
-                            setIsAllYear(false);
-                          }}
-                          className="bg-zinc-950/70 border border-zinc-800 hover:border-emerald-500/50 p-3 rounded-xl cursor-pointer transition-all hover:scale-[1.02] space-y-1.5 group"
-                        >
-                          <div className="flex justify-between items-center">
-                            <span className="text-xs font-black text-emerald-400 group-hover:text-emerald-300">{MONTH_NAMES[i]}</span>
-                            <span className="text-[10px] bg-zinc-850 px-2 py-0.5 rounded-md text-zinc-400 font-mono">{mLogs.length} dias</span>
+                        <div className="bg-gradient-to-r from-emerald-950/40 via-zinc-900 to-zinc-900 border border-emerald-500/30 rounded-xl p-3 sm:p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 mb-2 border-b border-zinc-800/80">
+                            <span className="text-xs font-black uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                              <span>📊</span> Acumulado de {selectedYear} ({activeMonthsCount} {activeMonthsCount === 1 ? 'mês' : 'meses ativos'})
+                            </span>
+                            <span className="text-[11px] font-mono text-zinc-400">
+                              Consolidado Geral
+                            </span>
                           </div>
-                          <div className="space-y-0.5 font-mono text-[11px]">
-                            <div className="flex justify-between text-zinc-300">
-                              <span className="text-zinc-500 text-[10px] font-sans">Faturamento:</span>
-                              <span className="font-bold text-emerald-400">{formatBRL(mGross)}</span>
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 font-mono text-center">
+                            <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-850">
+                              <span className="text-[10px] text-zinc-400 block font-sans font-medium">Faturamento</span>
+                              <span className="text-xs sm:text-sm font-black text-blue-400">{formatBRL(yearGross)}</span>
                             </div>
-                            <div className="flex justify-between text-zinc-300">
-                              <span className="text-zinc-500 text-[10px] font-sans">Custos Ops:</span>
-                              <span className="text-amber-400">{formatBRL(mCosts)}</span>
+                            {yearAnjo > 0 && (
+                              <div className="bg-amber-950/20 p-2.5 rounded-lg border border-amber-500/30">
+                                <span className="text-[10px] text-amber-400 block font-sans font-medium flex items-center justify-center gap-1">
+                                  <span>👼</span> Anjo Recebido
+                                </span>
+                                <span className="text-xs sm:text-sm font-black text-amber-300">{formatBRL(yearAnjo)}</span>
+                              </div>
+                            )}
+                            <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-850">
+                              <span className="text-[10px] text-zinc-400 block font-sans font-medium">Custos Operacionais</span>
+                              <span className="text-xs sm:text-sm font-black text-amber-400">{formatBRL(yearTotalCosts)}</span>
                             </div>
-                            <div className="flex justify-between border-t border-zinc-850 pt-1 text-[11px] font-bold">
-                              <span className="text-zinc-400 text-[10px] font-sans">Lucro:</span>
-                              <span className={mNet >= 0 ? 'text-blue-400' : 'text-red-400'}>{formatBRL(mNet)}</span>
+                            <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-emerald-500/40 col-span-2 sm:col-span-1">
+                              <span className="text-[10px] text-emerald-400 block font-sans font-bold">Lucro Líquido Acumulado</span>
+                              <span className={`text-xs sm:text-sm font-black ${yearNet >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                {formatBRL(yearNet)}
+                              </span>
                             </div>
                           </div>
                         </div>
                       );
-                    })}
+                    })()}
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      {Array.from({ length: 12 }, (_, i) => {
+                        const mNum = i + 1;
+                        const mLogs = logs.filter(l => {
+                          const [y, m] = l.date.split('-').map(Number);
+                          return y === selectedYear && m === mNum;
+                        });
+                        if (mLogs.length === 0) return null;
+
+                        let mGross = 0;
+                        let mCosts = 0;
+                        let mRides = 0;
+                        let mAnjo = 0;
+                        mLogs.forEach(l => {
+                          if (l.exibirNoGeral) {
+                            const uTotal = l.appUber.earnings + l.appUber.bonus;
+                            const nTotal = l.app99.earnings + l.app99.bonus;
+                            const pTotal = l.appParticular.earnings;
+                            const dayAnjo = l.anjo !== undefined ? l.anjo : (l.outrasFontes || 0);
+                            mAnjo += dayAnjo;
+                            mGross += uTotal + nTotal + pTotal + (l.recompensasExtra || 0) + dayAnjo;
+                            mRides += l.appUber.rides + l.app99.rides + l.appParticular.rides;
+                          }
+                          const dayCarExp = (Object.values(l.carExpenses) as number[]).reduce((a, b) => a + b, 0);
+                          const dayFoodExp = (Object.values(l.foodExpenses) as number[]).reduce((a, b) => a + b, 0);
+                          mCosts += l.custoEnergia + l.diariaCarro + dayCarExp + dayFoodExp;
+                        });
+
+                        const mKeyPadded = `${selectedYear}-${String(mNum).padStart(2, '0')}`;
+                        const mKeyUnpadded = `${selectedYear}-${mNum}`;
+                        const mFixedList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
+                        const mFixedSum = mFixedList.reduce((sum, item) => sum + item.value, 0);
+
+                        const mLogsDiariaSum = mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0);
+                        const mEffectiveFixed = mFixedSum > 0 ? mFixedSum : mLogsDiariaSum;
+                        const mTotalCosts = (mCosts - mLogsDiariaSum) + mEffectiveFixed;
+                        const mNet = mGross - mTotalCosts;
+
+                        return (
+                          <div 
+                            key={mNum}
+                            onClick={() => {
+                              setSelectedMonth(mNum);
+                              setIsAllYear(false);
+                            }}
+                            className="bg-zinc-950/70 border border-zinc-800 hover:border-emerald-500/50 p-3 rounded-xl cursor-pointer transition-all hover:scale-[1.02] space-y-1.5 group"
+                          >
+                            <div className="flex justify-between items-center">
+                              <span className="text-xs font-black text-emerald-400 group-hover:text-emerald-300">{MONTH_NAMES[i]}</span>
+                              <span className="text-[10px] bg-zinc-850 px-2 py-0.5 rounded-md text-zinc-400 font-mono">{mLogs.length} dias</span>
+                            </div>
+                            <div className="space-y-0.5 font-mono text-[11px]">
+                              <div className="flex justify-between text-zinc-300">
+                                <span className="text-zinc-500 text-[10px] font-sans">Faturamento:</span>
+                                <span className="font-bold text-blue-400">{formatBRL(mGross)}</span>
+                              </div>
+                              {mAnjo > 0 && (
+                                <div className="flex justify-between text-amber-300">
+                                  <span className="text-amber-500 text-[10px] font-sans flex items-center gap-0.5">
+                                    <span>👼</span> Anjo:
+                                  </span>
+                                  <span className="font-bold text-amber-400">{formatBRL(mAnjo)}</span>
+                                </div>
+                              )}
+                              <div className="flex justify-between text-zinc-300">
+                                <span className="text-zinc-500 text-[10px] font-sans">Custos Ops:</span>
+                                <span className="text-amber-400">{formatBRL(mTotalCosts)}</span>
+                              </div>
+                              <div className="flex justify-between border-t border-zinc-850 pt-1 text-[11px] font-bold">
+                                <span className="text-zinc-400 text-[10px] font-sans">Lucro:</span>
+                                <span className={mNet >= 0 ? 'text-emerald-400' : 'text-red-400'}>{formatBRL(mNet)}</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 ) : (
                   /* Calendar grid */
@@ -3685,7 +4573,7 @@ export default function App() {
                       {/* Real Month days */}
                       {calendarDays.map((dayData) => {
                         const { day, dateStr, log, isSunday, isOff } = dayData;
-                        const gross = log ? (log.appUber.earnings + log.appUber.bonus + log.app99.earnings + log.app99.bonus + log.appParticular.earnings + (log.recompensasExtra || 0)) : 0;
+                        let gross = log ? (log.appUber.earnings + log.appUber.bonus + log.app99.earnings + log.app99.bonus + log.appParticular.earnings + (log.recompensasExtra || 0)) : 0;
                         const dayAnjo = log ? (log.anjo !== undefined ? log.anjo : (log.outrasFontes || 0)) : 0;
                         const carExpensesSum = log ? ((log.carExpenses?.wash || 0) + (log.carExpenses?.toll || 0) + (log.carExpenses?.maintenance || 0) + (log.carExpenses?.parking || 0) + (log.carExpenses?.other || 0)) : 0;
                         const foodExpensesSum = log ? ((log.foodExpenses?.lunch || 0) + (log.foodExpenses?.dinner || 0) + (log.foodExpenses?.snacks || 0) + (log.foodExpenses?.coffee || 0)) : 0;
@@ -3699,43 +4587,32 @@ export default function App() {
                         let dayNumColor = "text-zinc-400";
 
                         if (isOff) {
+                          dayCardStyle = "bg-amber-950/25 border-amber-500/70 hover:bg-amber-900/35 hover:border-amber-400 shadow-sm shadow-amber-500/10";
+                          dayDotColor = "bg-amber-400";
+                          dayNumColor = "text-amber-300 font-bold";
                           if (gross > 0) {
-                            if (gross >= 500 || (weekAvgPasses && gross > 0)) {
-                              dayCardStyle = "bg-emerald-950/40 border-emerald-500/80 hover:bg-emerald-900/50 hover:border-emerald-400 shadow-sm shadow-emerald-500/10";
-                              dayDotColor = "bg-emerald-400";
-                              dayTextElement = <span className="text-emerald-400 font-black font-mono whitespace-nowrap">{formatBRL(gross).replace('R$', '').trim()}</span>;
-                              dayNumColor = "text-emerald-300";
-                            } else {
-                              dayCardStyle = "bg-amber-950/30 border-amber-500/70 hover:bg-amber-900/40 hover:border-amber-400 shadow-sm shadow-amber-500/10";
-                              dayDotColor = "bg-amber-400";
-                              dayTextElement = <span className="text-amber-400 font-black font-mono whitespace-nowrap">{formatBRL(gross).replace('R$', '').trim()}</span>;
-                              dayNumColor = "text-amber-300";
-                            }
+                            dayTextElement = <span className="text-amber-400 font-black font-mono whitespace-nowrap">{formatBRL(gross).replace('R$', '').trim()}</span>;
                           } else {
-                            if (isSunday) {
-                              dayCardStyle = "bg-zinc-900/60 border-amber-500/30 hover:bg-zinc-850 hover:border-amber-400/50 text-zinc-400";
-                              dayDotColor = "bg-amber-400";
-                              dayTextElement = <span className="text-amber-400/90 font-medium text-[9px] sm:text-[10px] uppercase">Folga</span>;
-                              dayNumColor = "text-amber-400/90 font-bold";
-                            } else {
-                              dayCardStyle = "bg-zinc-900/60 border-zinc-800/80 hover:bg-zinc-850 hover:border-zinc-700 text-zinc-400";
-                              dayDotColor = "bg-zinc-500";
-                              dayTextElement = <span className="text-zinc-500 font-medium text-[9px] sm:text-[10px] uppercase">Folga</span>;
-                              dayNumColor = "text-zinc-400";
-                            }
+                            dayTextElement = <span className="text-amber-400/90 font-medium text-[9px] sm:text-[10px] uppercase">Folga</span>;
                           }
+                        } else if (!hasActivity) {
+                          // Dia sem atividade / sem lançamento ainda (neutro e discreto)
+                          dayCardStyle = "bg-zinc-950/50 border-zinc-850 hover:bg-zinc-900/60 hover:border-zinc-700/70 transition-all";
+                          dayDotColor = "";
+                          dayNumColor = "text-zinc-500 font-semibold";
+                          dayTextElement = <span className="text-zinc-600 font-mono font-medium text-[10px] sm:text-[11px]">0,00</span>;
                         } else {
-                          // Dia de Trabalho (Independente se é domingo ou não)
+                          // Dia de Trabalho com atividade lançada (Independente se é domingo ou não)
                           if (gross >= 500 || weekAvgPasses) {
-                            dayCardStyle = "bg-emerald-950/40 border-emerald-500/80 hover:bg-emerald-900/50 hover:border-emerald-400 shadow-sm shadow-emerald-500/10";
-                            dayDotColor = "bg-emerald-400";
-                            dayTextElement = <span className="text-emerald-400 font-black font-mono whitespace-nowrap">{formatBRL(gross).replace('R$', '').trim()}</span>;
-                            dayNumColor = "text-emerald-300";
+                            dayCardStyle = "bg-blue-950/40 border-blue-500/80 hover:bg-blue-900/50 hover:border-blue-400 shadow-sm shadow-blue-500/10";
+                            dayDotColor = "bg-blue-400";
+                            dayTextElement = <span className="text-blue-400 font-black font-mono whitespace-nowrap">{formatBRL(gross).replace('R$', '').trim()}</span>;
+                            dayNumColor = "text-blue-300 font-bold";
                           } else {
                             dayCardStyle = "bg-rose-950/40 border-rose-500/80 hover:bg-rose-900/50 hover:border-rose-400 shadow-sm shadow-rose-500/10";
                             dayDotColor = "bg-rose-400";
                             dayTextElement = <span className="text-rose-400 font-black font-mono whitespace-nowrap">{gross > 0 ? formatBRL(gross).replace('R$', '').trim() : '0,00'}</span>;
-                            dayNumColor = "text-rose-300";
+                            dayNumColor = "text-rose-300 font-bold";
                           }
                         }
                         const isHighlightedByAssistant = highlightedAssistantDates.has(dateStr);
@@ -3763,7 +4640,9 @@ export default function App() {
                                   </span>
                                 ) : dayDotColor ? (
                                   <span className={`w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full ${dayDotColor}`} />
-                                ) : null}
+                                ) : (
+                                  <span className="w-1.5 h-1.5 rounded-full bg-zinc-800/80" />
+                                )}
                               </div>
                             </div>
 
@@ -4003,7 +4882,9 @@ export default function App() {
                           <span className="text-zinc-200 font-bold">{formatBRL(totalEnergyCost)}</span>
                         </div>
                         <div className="bg-zinc-950/60 border border-zinc-850 p-2.5 rounded-xl space-y-0.5">
-                          <span className="text-[9px] text-zinc-500 block font-sans">DIÁRIAS DO CARRO</span>
+                          <span className="text-[9px] text-zinc-500 block font-sans">
+                            {carProfile.tipoPropriedade === 'alugado' ? 'DIÁRIAS DO CARRO' : 'DIÁRIAS (VIRTUAL)'}
+                          </span>
                           <span className="text-zinc-200 font-bold">{formatBRL(totalCarRental)}</span>
                         </div>
                         <div className="bg-zinc-950/60 border border-zinc-850 p-2.5 rounded-xl space-y-0.5">
@@ -4277,14 +5158,6 @@ export default function App() {
             {!isAddingFixed && (
               <div className="flex flex-wrap items-center gap-2">
                 <button
-                  type="button"
-                  onClick={() => setIsPasteFixedExpensesModalOpen(true)}
-                  className="flex items-center gap-2 px-3.5 py-2 bg-indigo-950/70 hover:bg-indigo-900/90 border border-indigo-500/50 text-indigo-200 font-bold rounded-xl text-xs transition-all shadow-md cursor-pointer"
-                  title="Copiar e colar contas do Excel, WhatsApp, extrato bancário ou relatório"
-                >
-                  <Clipboard className="w-3.5 h-3.5 text-indigo-400" /> Copiar e Colar Contas
-                </button>
-                <button
                   onClick={() => {
                     setEditingFixedId(null);
                     setNewFixedName('');
@@ -4324,7 +5197,7 @@ export default function App() {
                     </span>
                   )}
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                   <div className="space-y-1">
                     <label className="text-[10px] text-zinc-400 block uppercase font-bold">Nome da Conta / Despesa</label>
                     <input
@@ -4350,12 +5223,21 @@ export default function App() {
                     />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[10px] text-zinc-400 block uppercase font-bold">Parcelas / Vencimento (Opcional)</label>
+                    <label className="text-[10px] text-zinc-400 block uppercase font-bold">Parcelas (Ex: 09/12)</label>
                     <input
                       type="text"
-                      placeholder="Ex: 09/12 ou Vence dia 10"
+                      placeholder="Ex: 09/12"
                       value={newFixedInstallments}
                       onChange={e => setNewFixedInstallments(e.target.value)}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-2.5 text-xs font-semibold focus:outline-none focus:border-emerald-500 font-sans text-zinc-100"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-zinc-400 block uppercase font-bold">Data Início</label>
+                    <input
+                      type="month"
+                      value={newFixedStartDate}
+                      onChange={e => setNewFixedStartDate(e.target.value)}
                       className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-2.5 text-xs font-semibold focus:outline-none focus:border-emerald-500 font-sans text-zinc-100"
                     />
                   </div>
@@ -4624,9 +5506,9 @@ export default function App() {
                 </button>
                 {!isKpisSectionOpen && (
                   <div className="hidden sm:flex items-center gap-2 text-xs font-mono font-bold">
-                    <span className="text-emerald-400">{formatBRL(totalGrossEarnings)}</span>
+                    <span className="text-blue-400">{formatBRL(totalGrossEarnings)}</span>
                     <span className="text-zinc-600">|</span>
-                    <span className={realNetEarnings >= 0 ? 'text-blue-400' : 'text-red-400'}>{formatBRL(realNetEarnings)}</span>
+                    <span className={realNetEarnings >= 0 ? 'text-emerald-400' : 'text-red-400'}>{formatBRL(realNetEarnings)}</span>
                   </div>
                 )}
                 <div className="p-1.5 bg-zinc-800 rounded-lg text-zinc-400">
@@ -4645,13 +5527,13 @@ export default function App() {
                     <Coins className="w-5 h-5 text-emerald-400 shrink-0" />
                   </div>
                   <div>
-                    <h3 className="text-xl sm:text-2xl font-black text-emerald-400 tracking-tight font-mono truncate" title={formatBRL(totalGrossEarnings)}>
+                    <h3 className="text-xl sm:text-2xl font-black text-blue-400 tracking-tight font-mono truncate" title={formatBRL(totalGrossEarnings)}>
                       {formatBRL(totalGrossEarnings)}
                     </h3>
                     <div className="mt-2.5 pt-2 border-t border-zinc-850/60 space-y-1 text-[11px]">
                       <div className="flex justify-between items-center text-zinc-300 gap-2">
                         <span className="text-zinc-400 font-medium truncate">Trabalho + Recompensas:</span>
-                        <span className="font-mono font-bold text-emerald-400 shrink-0">{formatBRL(totalOperationalEarnings)}</span>
+                        <span className="font-mono font-bold text-blue-400 shrink-0">{formatBRL(totalOperationalEarnings)}</span>
                       </div>
                       <div className="flex justify-between items-center text-zinc-300 gap-2">
                         <span className="text-amber-400 font-semibold flex items-center gap-1 truncate">
@@ -4661,7 +5543,7 @@ export default function App() {
                       </div>
                       <div className="flex justify-between items-center text-[10px] text-zinc-500 pt-1 border-t border-zinc-850/40">
                         <span>{totalRides} Corridas</span>
-                        <span className="text-emerald-500 font-semibold">
+                        <span className="text-blue-500 font-semibold">
                           {totalRides > 0 ? formatBRL(totalOperationalEarnings / totalRides) + '/corr' : 'R$ 0,00'}
                         </span>
                       </div>
@@ -4707,7 +5589,7 @@ export default function App() {
                   <div className="space-y-2">
                     <div className="flex justify-between items-baseline gap-2">
                       <span className="text-[10px] text-zinc-500 font-bold uppercase shrink-0">Operacional:</span>
-                      <span className={`text-xs sm:text-sm font-bold font-mono truncate ${netOperational >= 0 ? 'text-blue-400' : 'text-red-400'}`}>
+                      <span className={`text-xs sm:text-sm font-bold font-mono truncate ${netOperational >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                         {formatBRL(netOperational)}
                       </span>
                     </div>
@@ -4807,7 +5689,7 @@ export default function App() {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
                 <div className="bg-zinc-950/60 p-3 sm:p-3.5 rounded-xl border border-zinc-850 min-w-0 overflow-hidden flex flex-col justify-between">
                   <span className="text-[10px] font-bold uppercase text-zinc-400 block truncate" title="Faturamento Bruto Est.">Faturamento Bruto Est.</span>
-                  <span className="text-sm xs:text-base sm:text-lg font-black font-mono text-emerald-400 block truncate tracking-tight my-0.5" title={formatBRL(currentMonthProj?.projGross || 0)}>
+                  <span className="text-sm xs:text-base sm:text-lg font-black font-mono text-blue-400 block truncate tracking-tight my-0.5" title={formatBRL(currentMonthProj?.projGross || 0)}>
                     {formatBRL(currentMonthProj?.projGross || 0)}
                   </span>
                   <span className="text-[10px] text-zinc-400 block truncate">
@@ -5083,12 +5965,21 @@ export default function App() {
                 <span className="font-mono font-bold text-zinc-200">{formatBRL(totalEnergyCost)}</span>
               </div>
 
-              <div className="flex items-center justify-between p-2 bg-zinc-950/60 rounded-xl border border-zinc-850">
-                <span className="text-zinc-300 flex items-center gap-2">
-                  <Car className="w-3.5 h-3.5 text-blue-400" /> Diária / Aluguel do Carro
-                </span>
-                <span className="font-mono font-bold text-zinc-200">{formatBRL(totalCarRental)}</span>
-              </div>
+              {carProfile.tipoPropriedade === 'alugado' ? (
+                <div className="flex items-center justify-between p-2 bg-zinc-950/60 rounded-xl border border-zinc-850">
+                  <span className="text-zinc-300 flex items-center gap-2">
+                    <Car className="w-3.5 h-3.5 text-blue-400" /> Diária / Aluguel do Carro
+                  </span>
+                  <span className="font-mono font-bold text-zinc-200">{formatBRL(totalCarRental)}</span>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between p-2 bg-zinc-950/40 rounded-xl border border-zinc-900 opacity-60">
+                  <span className="text-zinc-400 flex items-center gap-2">
+                    <Car className="w-3.5 h-3.5 text-zinc-500" /> Diária do Carro (Virtual)
+                  </span>
+                  <span className="font-mono font-medium text-zinc-500 text-[10px]" title="Já incluso no total de Despesas Fixas abaixo">Incluso nas Contas</span>
+                </div>
+              )}
 
               <div className="flex items-center justify-between p-2 bg-zinc-950/60 rounded-xl border border-zinc-850">
                 <span className="text-zinc-300 flex items-center gap-2">
@@ -5167,45 +6058,41 @@ export default function App() {
 
       </main>
 
-      {/* Elegant Footer info */}
-      <footer className="border-t border-zinc-900 bg-zinc-950 py-10 mt-20 text-xs text-zinc-500 pb-28">
-        <div className="max-w-7xl mx-auto px-6 text-center space-y-3">
-          <div className="flex items-center justify-center gap-2.5 text-zinc-500 text-xs">
-            <button
-              type="button"
-              onClick={() => { setHelpActiveTab('geral'); setIsHelpModalOpen(true); }}
-              className="p-1 bg-white border border-zinc-700/80 rounded-lg shadow-sm hover:scale-105 transition-transform cursor-pointer"
-              title="GKD Mobility"
-            >
-              <GkdMobilityLogo size="xs" />
-            </button>
-            <button
-              type="button"
-              onClick={() => { setHelpActiveTab('geral'); setIsHelpModalOpen(true); }}
-              className="font-bold text-zinc-300 hover:text-emerald-400 transition-colors cursor-pointer"
-              title="Clique para ver Detalhes e Descrição do Aplicativo"
-            >
-              GKD Controle Diário
-            </button>
-            <span className="text-zinc-700">•</span>
-            <button
-              type="button"
-              onClick={() => { setHelpActiveTab('geral'); setIsHelpModalOpen(true); }}
-              className="text-[11px] font-mono text-zinc-500 hover:text-zinc-400 transition-colors cursor-pointer"
-              title="Versão do Aplicativo (Clique para detalhes)"
-            >
-              GKD_CD_V.2.0.0
-            </button>
-          </div>
-          <p className="max-w-xl mx-auto text-zinc-500 leading-relaxed">
-            Algoritmo inteligente integrado para {carProfile.vehicleType === 'eletrico' ? 'carros elétricos' : 'carros a combustão'}. Cálculos operacionais, persistência local 100% offline e interface otimizada para dispositivos móveis.
-          </p>
-        </div>
-      </footer>
+      {/* BOTÃO FLUTUANTE COMPACTO PARA REEXIBIR O RODAPÉ SE ELE FOI RECOLHIDO */}
+      {isBottomDockCollapsed && !isAddingFixed && !isInputActive && !isAnyModalOpen && (
+        <button
+          type="button"
+          onClick={() => setIsBottomDockCollapsed(false)}
+          className="fixed bottom-4 right-4 z-40 bg-zinc-900/95 hover:bg-zinc-800 border border-emerald-500/50 text-zinc-200 hover:text-emerald-300 px-3.5 py-2 rounded-full text-xs font-bold shadow-2xl shadow-black flex items-center gap-2 backdrop-blur-md transition-all cursor-pointer animate-fadeIn"
+          title="Exibir barra de navegação"
+        >
+          <LayoutGrid className="w-3.5 h-3.5 text-emerald-400" />
+          <span>Menu</span>
+          <ChevronUp className="w-3.5 h-3.5 text-zinc-400" />
+        </button>
+      )}
 
       {/* MODERN BOTTOM NAVIGATION BAR DOCK */}
-      <nav id="bottom-dock-nav" className="fixed bottom-0 left-0 right-0 z-50 bg-[#090b10]/95 backdrop-blur-xl border-t border-zinc-800/90 shadow-[0_-15px_40px_rgba(0,0,0,0.9)] pb-[calc(env(safe-area-inset-bottom)+14px)] pt-3 px-2">
+      <nav 
+        id="bottom-dock-nav" 
+        className={`fixed bottom-0 left-0 right-0 z-40 bg-[#090b10]/95 backdrop-blur-xl border-t border-zinc-800/90 shadow-[0_-15px_40px_rgba(0,0,0,0.9)] pb-[calc(env(safe-area-inset-bottom)+14px)] pt-3 px-2 transition-all duration-300 ease-in-out ${
+          (isInputActive || isAddingFixed || isAnyModalOpen || isBottomDockCollapsed)
+            ? 'translate-y-full opacity-0 pointer-events-none invisible hidden' 
+            : 'translate-y-0 opacity-100 visible'
+        }`}
+      >
         <div className="max-w-lg mx-auto px-3 sm:px-4 py-2 flex items-center justify-between relative">
+          
+          {/* Botão discreto para recolher/esconder o rodapé */}
+          <button
+            type="button"
+            onClick={() => setIsBottomDockCollapsed(true)}
+            className="absolute -top-3.5 right-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-zinc-400 hover:text-zinc-200 px-2 py-0.5 rounded-full text-[10px] font-semibold flex items-center gap-1 shadow-lg shadow-black/60 transition-all cursor-pointer"
+            title="Esconder rodapé com botões"
+          >
+            <ChevronDown className="w-3 h-3 text-zinc-400" />
+            <span>Esconder</span>
+          </button>
           
           {/* 1. Contas */}
           <button
@@ -5582,6 +6469,109 @@ export default function App() {
                 );
               })()}
 
+              {/* Pop-up Modal de Estimativa de Bateria a partir do KM */}
+              {confirmBatteryEstimatePrompt && batteryEstimateInfo && (
+                <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center z-[110] p-4 pb-[calc(env(safe-area-inset-bottom)+24px)] animate-fadeIn">
+                  <div className="bg-[#0f131a] border border-emerald-500/40 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden flex flex-col p-5 sm:p-6 space-y-4 animate-scaleUp">
+                    
+                    {/* Header */}
+                    <div className="flex items-center justify-between border-b border-zinc-800 pb-3.5">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2.5 bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 rounded-xl shrink-0">
+                          <Zap className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-bold text-zinc-100">
+                            Estimativa de Bateria
+                          </h3>
+                          <p className="text-xs text-emerald-400 font-medium">Reencaixe automático pela rodagem</p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmBatteryEstimatePrompt(false);
+                          batteryEstimateDismissedRef.current = true;
+                        }}
+                        className="p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
+                        title="Fechar"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {/* Description & Calculation Metrics */}
+                    <div className="bg-zinc-900/80 border border-zinc-800 p-4 rounded-xl space-y-3">
+                      <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed">
+                        Como o campo <span className="font-bold text-zinc-100">Sobrou de Bateria (%)</span> não foi preenchido, a bateria restante e o custo foram reencaixados com base nos <span className="font-bold text-emerald-400">{batteryEstimateInfo.km} KM</span> rodados:
+                      </p>
+
+                      <div className="grid grid-cols-2 gap-2 pt-1">
+                        <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-800/80">
+                          <span className="text-[10px] text-zinc-500 block uppercase font-bold">Consumo Estimado</span>
+                          <span className="text-sm font-bold text-amber-400">
+                            {batteryEstimateInfo.consumedPercent}% <span className="text-[10px] text-zinc-400 font-normal">({batteryEstimateInfo.energyConsumedKwh} kWh)</span>
+                          </span>
+                        </div>
+
+                        <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-800/80">
+                          <span className="text-[10px] text-zinc-500 block uppercase font-bold">Bateria Restante</span>
+                          <span className="text-sm font-bold text-emerald-400">
+                            {batteryEstimateInfo.remainingPercent}%
+                          </span>
+                        </div>
+
+                        <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-800/80">
+                          <span className="text-[10px] text-zinc-500 block uppercase font-bold">Autonomia Média</span>
+                          <span className="text-sm font-bold text-zinc-200">
+                            {batteryEstimateInfo.autonomy} km
+                          </span>
+                        </div>
+
+                        <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-800/80">
+                          <span className="text-[10px] text-zinc-500 block uppercase font-bold">Custo Estimado</span>
+                          <span className="text-sm font-bold text-emerald-300 font-mono">
+                            R$ {batteryEstimateInfo.estimatedCost}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Action Buttons */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSobrouBateria(String(batteryEstimateInfo.remainingPercent));
+                          setCustoEnergia(batteryEstimateInfo.estimatedCost);
+                          setIsEnergyCostOverridden(false);
+                          setConfirmBatteryEstimatePrompt(false);
+                          batteryEstimateDismissedRef.current = true;
+                          setSweepNotification(`🔋 Bateria restante estimada em ${batteryEstimateInfo.remainingPercent}% aplicada!`);
+                          setTimeout(() => setSweepNotification(null), 4000);
+                        }}
+                        className="py-3 px-4 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black text-xs sm:text-sm rounded-xl transition-all cursor-pointer shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-1.5"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Aplicar {batteryEstimateInfo.remainingPercent}% Bateria</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmBatteryEstimatePrompt(false);
+                          batteryEstimateDismissedRef.current = true;
+                        }}
+                        className="py-3 px-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold text-xs sm:text-sm rounded-xl transition-all cursor-pointer text-center"
+                      >
+                        Digitar Manualmente
+                      </button>
+                    </div>
+
+                  </div>
+                </div>
+              )}
+
               {errorMessage && (
                 <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-xl text-xs flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 shrink-0" />
@@ -5746,8 +6736,23 @@ export default function App() {
 
                   <div className="grid grid-cols-3 gap-3">
                     <div className="space-y-1.5">
-                      <label className="text-[11px] text-zinc-500 block font-bold uppercase tracking-wider">{carProfile.vehicleType === 'eletrico' ? 'Sobrou de Bateria (%)' : 'Sobrou no Tanque (%)'}</label>
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] text-zinc-500 block font-bold uppercase tracking-wider">{carProfile.vehicleType === 'eletrico' ? 'Sobrou de Bateria (%)' : 'Sobrou no Tanque (%)'}</label>
+                        {parseInt(String(kmRodado), 10) > 0 && (!sobrouBateria || String(sobrouBateria).trim() === '') && (
+                          <button
+                            type="button"
+                            onClick={() => triggerBatteryEstimatePopup()}
+                            className="text-[9px] text-emerald-400 font-bold bg-emerald-500/10 hover:bg-emerald-500/20 px-1.5 py-0.5 rounded border border-emerald-500/30 transition-all inline-flex items-center gap-1 cursor-pointer"
+                            title="Calcular estimativa pelos KM rodados"
+                          >
+                            <Zap className="w-2.5 h-2.5" /> Estimar
+                          </button>
+                        )}
+                      </div>
                       <input
+                        ref={sobrouBateriaInputRef}
+                        tabIndex={1}
+                        enterKeyHint="next"
                         type="text"
                         inputMode="decimal"
                         placeholder="Ex: 20"
@@ -5759,6 +6764,7 @@ export default function App() {
                           setLastEditedEnergyField('bateria');
                           setIsEnergyCostOverridden(false);
                         }}
+                        onKeyDown={(e) => handleModalInputNext(e, kmRodadoInputRef)}
                         className="w-full bg-[#0d0d0f] border border-zinc-800/50 rounded-xl text-sm py-3 px-4 font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 transition-all"
                       />
                     </div>
@@ -5773,6 +6779,7 @@ export default function App() {
                         )}
                       </div>
                       <input
+                        tabIndex={20}
                         type="text"
                         inputMode="decimal"
                         value={valorKwh}
@@ -5799,6 +6806,7 @@ export default function App() {
                         )}
                       </div>
                       <input
+                        tabIndex={21}
                         type="text"
                         inputMode="decimal"
                         value={capacidadeBateria}
@@ -5820,8 +6828,16 @@ export default function App() {
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1.5">
-                      <label className="text-[11px] text-zinc-500 block font-bold uppercase tracking-wider">KM Rodado</label>
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] text-zinc-500 block font-bold uppercase tracking-wider">KM Rodado</label>
+                        {parseInt(String(kmRodado), 10) > 0 && (!sobrouBateria || String(sobrouBateria).trim() === '') && (
+                          <span className="text-[9px] text-emerald-400 font-medium">Bateria auto-estimada</span>
+                        )}
+                      </div>
                       <input
+                        ref={kmRodadoInputRef}
+                        tabIndex={2}
+                        enterKeyHint="next"
                         type="text"
                         inputMode="numeric"
                         placeholder="Ex: 180"
@@ -5832,11 +6848,16 @@ export default function App() {
                           setKmRodado(val);
                           setLastEditedEnergyField('km');
                           setIsEnergyCostOverridden(false);
+                          batteryEstimateDismissedRef.current = false;
                         }}
                         onBlur={() => {
                           const num = parseInt(String(kmRodado), 10) || 0;
-                          if (num > 0) setKmRodado(num.toString());
+                          if (num > 0) {
+                            setKmRodado(num.toString());
+                            triggerBatteryEstimatePopup(num);
+                          }
                         }}
+                        onKeyDown={(e) => handleModalInputNext(e, nRidesInputRef)}
                         className="w-full bg-[#0d0d0f] border border-zinc-800/50 rounded-xl text-sm py-3 px-4 font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 transition-all"
                       />
                     </div>
@@ -5844,6 +6865,7 @@ export default function App() {
                     <div className="space-y-1.5">
                       <label className="text-[11px] text-zinc-500 block font-bold uppercase tracking-wider">{carProfile.vehicleType === 'eletrico' ? 'Custo Energia (R$)' : 'Custo Abastec. (R$)'}</label>
                       <input
+                        tabIndex={22}
                         type="text"
                         inputMode="decimal"
                         placeholder="0.00"
@@ -5924,7 +6946,7 @@ export default function App() {
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-mono font-bold text-pink-400">
-                        {formatBRL((parseFloat(wash) || 0) + (parseFloat(toll) || 0) + (parseFloat(maintenance) || 0) + (parseFloat(parking) || 0) + (parseFloat(carOther) || 0))}
+                        {formatBRL((parseFloat(wash) || 0) + (parseFloat(toll) || 0) + (parseFloat(maintenance) || 0) + (parseFloat(parking) || 0) + (parseFloat(publicCharging) || 0) + (parseFloat(carOther) || 0))}
                       </span>
                       {isCarExpensesOpen ? <ChevronUp className="w-4 h-4 text-zinc-400" /> : <ChevronDown className="w-4 h-4 text-zinc-400" />}
                     </div>
@@ -6107,35 +7129,47 @@ export default function App() {
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Corridas</label>
                       <input
+                        ref={nRidesInputRef}
+                        tabIndex={3}
+                        enterKeyHint="next"
                         type="number"
                         placeholder="Ex: 8"
                         value={nRides}
                          
                         onChange={(e) => setNRides(e.target.value)}
+                        onKeyDown={(e) => handleModalInputNext(e, nEarningsInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Ganhos (R$)</label>
                       <input
+                        ref={nEarningsInputRef}
+                        tabIndex={4}
+                        enterKeyHint="next"
                         type="number"
                         step="0.01"
                         placeholder="0.00"
                         value={nEarnings}
                          
                         onChange={(e) => setNEarnings(e.target.value)}
+                        onKeyDown={(e) => handleModalInputNext(e, uRidesInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Recomp. (R$)</label>
                       <input
+                        ref={nBonusInputRef}
+                        tabIndex={24}
+                        enterKeyHint="next"
                         type="number"
                         step="0.01"
                         placeholder="0.00"
                         value={nBonus}
                          
                         onChange={(e) => setNBonus(e.target.value)}
+                        onKeyDown={(e) => handleModalInputNext(e, uRidesInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
@@ -6149,35 +7183,47 @@ export default function App() {
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Corridas</label>
                       <input
+                        ref={uRidesInputRef}
+                        tabIndex={5}
+                        enterKeyHint="next"
                         type="number"
                         placeholder="Ex: 12"
                         value={uRides}
                          
                         onChange={(e) => setURides(e.target.value)}
+                        onKeyDown={(e) => handleModalInputNext(e, uEarningsInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Ganhos (R$)</label>
                       <input
+                        ref={uEarningsInputRef}
+                        tabIndex={6}
+                        enterKeyHint="next"
                         type="number"
                         step="0.01"
                         placeholder="0.00"
                         value={uEarnings}
                          
                         onChange={(e) => setUEarnings(e.target.value)}
+                        onKeyDown={(e) => handleModalInputNext(e, pRidesInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Recomp. (R$)</label>
                       <input
+                        ref={uBonusInputRef}
+                        tabIndex={25}
+                        enterKeyHint="next"
                         type="number"
                         step="0.01"
                         placeholder="0.00"
                         value={uBonus}
                          
                         onChange={(e) => setUBonus(e.target.value)}
+                        onKeyDown={(e) => handleModalInputNext(e, pRidesInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
@@ -6191,23 +7237,36 @@ export default function App() {
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Corridas</label>
                       <input
+                        ref={pRidesInputRef}
+                        tabIndex={7}
+                        enterKeyHint="next"
                         type="number"
                         placeholder="Ex: 2"
                         value={pRides}
                          
                         onChange={(e) => setPRides(e.target.value)}
+                        onKeyDown={(e) => handleModalInputNext(e, pEarningsInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Valor (R$)</label>
                       <input
+                        ref={pEarningsInputRef}
+                        tabIndex={8}
+                        enterKeyHint="done"
                         type="number"
                         step="0.01"
                         placeholder="0.00"
                         value={pEarnings}
                          
                         onChange={(e) => setPEarnings(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleSaveLog(e);
+                          }
+                        }}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
@@ -6394,7 +7453,7 @@ export default function App() {
                 <div className="flex flex-wrap items-center gap-3 text-xs font-mono">
                   <div className="bg-zinc-950/80 px-3 py-1.5 rounded-lg border border-zinc-800">
                     <span className="text-[10px] text-zinc-500 block uppercase font-sans font-bold">Bruto Est.</span>
-                    <span className="font-extrabold text-emerald-400">{formatBRL(currentMonthProj?.projGross || 0)}</span>
+                    <span className="font-extrabold text-blue-400">{formatBRL(currentMonthProj?.projGross || 0)}</span>
                   </div>
                   <div className="bg-zinc-950/80 px-3 py-1.5 rounded-lg border border-zinc-800">
                     <span className="text-[10px] text-zinc-500 block uppercase font-sans font-bold">Custos Est.</span>
@@ -6492,7 +7551,7 @@ export default function App() {
                       <tr className="bg-zinc-900/80 border-b border-zinc-800 text-zinc-400 font-mono text-[11px]">
                         <th className="py-2.5 px-3">Mês</th>
                         <th className="py-2.5 px-3 text-center">Status</th>
-                        <th className="py-2.5 px-3 text-right">Fat. Bruto</th>
+                        <th className="py-2.5 px-3 text-right text-blue-400">Fat. Bruto</th>
                         <th className="py-2.5 px-3 text-right">Custos Var.</th>
                         <th className="py-2.5 px-3 text-right">Desp. Fixas</th>
                         <th className="py-2.5 px-3 text-right font-bold text-emerald-400">Resultado Líquido</th>
@@ -6516,7 +7575,7 @@ export default function App() {
                               </span>
                             )}
                           </td>
-                          <td className="py-2 px-3 text-right text-zinc-200">{formatBRL(m.projGross)}</td>
+                          <td className="py-2 px-3 text-right text-blue-300">{formatBRL(m.projGross)}</td>
                           <td className="py-2 px-3 text-right text-red-400/90">-{formatBRL(m.projVarCosts)}</td>
                           <td className="py-2 px-3 text-right text-amber-400/90">-{formatBRL(m.projFixed)}</td>
                           <td className={`py-2 px-3 text-right font-bold ${m.projNet >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -6527,11 +7586,11 @@ export default function App() {
                     </tbody>
                     <tfoot className="bg-zinc-900 border-t-2 border-zinc-800 font-mono font-black text-xs text-zinc-100">
                       <tr>
-                        <td className="py-3 px-3 font-sans uppercase text-emerald-400" colSpan={2}>Total Fechamento do Ano</td>
-                        <td className="py-3 px-3 text-right text-emerald-400">{formatBRL(projectionData.projectedGrossTotal)}</td>
+                        <td className="py-3 px-3 font-sans uppercase text-blue-400" colSpan={2}>Total Fechamento do Ano</td>
+                        <td className="py-3 px-3 text-right text-blue-400">{formatBRL(projectionData.projectedGrossTotal)}</td>
                         <td className="py-3 px-3 text-right text-red-400">-{formatBRL(projectionData.projectedVarCostsTotal)}</td>
                         <td className="py-3 px-3 text-right text-amber-400">-{formatBRL(projectionData.projectedFixedTotal)}</td>
-                        <td className="py-3 px-3 text-right text-emerald-300 text-sm">{formatBRL(projectionData.projectedNetTotal)}</td>
+                        <td className="py-3 px-3 text-right text-emerald-400 text-sm">{formatBRL(projectionData.projectedNetTotal)}</td>
                       </tr>
                     </tfoot>
                   </table>
@@ -6925,24 +7984,6 @@ export default function App() {
                       Ações Rápidas & Configurações:
                     </span>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      {/* IMPORTAÇÃO DE DADOS EXCEL */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsHelpModalOpen(false);
-                          setIsExcelImportOpen(true);
-                        }}
-                        className="p-3 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 hover:border-emerald-500/60 rounded-xl flex items-center gap-3 text-left transition-all cursor-pointer group"
-                      >
-                        <div className="p-2 bg-emerald-500 text-zinc-950 rounded-lg group-hover:scale-110 transition-transform">
-                          <FileSpreadsheet className="w-4 h-4 stroke-[2.5]" />
-                        </div>
-                        <div>
-                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Importar Planilha (Excel/CSV)</span>
-                          <span className="text-[11px] text-zinc-400">Puxar dados de faturamento e KM do Uber/99</span>
-                        </div>
-                      </button>
-
                       {/* NOVO REGISTRO */}
                       <button
                         type="button"
@@ -6997,6 +8038,76 @@ export default function App() {
                         </div>
                       </button>
 
+                      {/* EXPORTAR BACKUP MEMÓRIA INTERNA */}
+                      <div className="col-span-1 sm:col-span-2 p-3 bg-zinc-900/80 border border-zinc-800 rounded-xl space-y-2">
+                        <span className="text-[11px] font-bold text-zinc-300 uppercase tracking-wider block">
+                          Período do Backup:
+                        </span>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {(['all', 'week', 'month', 'year'] as const).map((s) => {
+                            const labels = { all: 'Tudo', week: 'Semana', month: 'Mês', year: 'Ano' };
+                            const isActive = exportScope === s;
+                            return (
+                              <button
+                                key={s}
+                                type="button"
+                                onClick={() => setExportScope(s)}
+                                className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all ${
+                                  isActive
+                                    ? 'bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/20'
+                                    : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                                }`}
+                              >
+                                {labels[s]}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleInternalExport()}
+                        className="p-3 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 hover:border-emerald-500/60 rounded-xl flex items-center gap-3 text-left transition-all cursor-pointer group"
+                      >
+                        <div className="p-2 bg-emerald-500 text-zinc-950 rounded-lg group-hover:scale-110 transition-transform">
+                          <FolderDown className="w-4 h-4 stroke-[2.5]" />
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Exportar Backup JSON ({exportScope === 'all' ? 'Tudo' : exportScope === 'year' ? 'Ano' : exportScope === 'month' ? 'Mês' : 'Semana'})</span>
+                          <span className="text-[11px] text-zinc-400">Escolha a pasta de destino no aparelho (.json)</span>
+                        </div>
+                      </button>
+
+                      {/* IMPORTAR BACKUP MEMÓRIA INTERNA */}
+                      <button
+                        type="button"
+                        onClick={() => internalFileInputRef.current?.click()}
+                        className="p-3 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 hover:border-emerald-500/60 rounded-xl flex items-center gap-3 text-left transition-all cursor-pointer group"
+                      >
+                        <div className="p-2 bg-emerald-500 text-zinc-950 rounded-lg group-hover:scale-110 transition-transform">
+                          <Upload className="w-4 h-4 stroke-[2.5]" />
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Importar Backup (Memória Interna)</span>
+                          <span className="text-[11px] text-zinc-400">Restaurar dados de arquivo JSON (.json)</span>
+                        </div>
+                      </button>
+                      <input 
+                        type="file" 
+                        ref={internalFileInputRef} 
+                        onChange={handleInternalImportFile} 
+                        accept=".json,.zip" 
+                        className="hidden" 
+                      />
+
+                      {internalBackupMessage && (
+                        <div className="col-span-1 sm:col-span-2 p-3 bg-emerald-500/15 border border-emerald-500/40 rounded-xl text-xs text-emerald-200 font-semibold flex items-center gap-2 animate-fade-in">
+                          <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                          <span>{internalBackupMessage}</span>
+                        </div>
+                      )}
+
                       {/* FALE CONOSCO (WHATSAPP) */}
                       <button
                         type="button"
@@ -7050,6 +8161,24 @@ export default function App() {
                         <div>
                           <span className="text-xs font-bold text-zinc-200 block group-hover:text-sky-300">Auditoria</span>
                           <span className="text-[11px] text-zinc-400">Auditoria completa de integridade local</span>
+                        </div>
+                      </button>
+
+                      {/* PERMISSÕES DO SISTEMA */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsHelpModalOpen(false);
+                          setIsPermissionsModalOpen(true);
+                        }}
+                        className="p-3 bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 hover:border-emerald-500/40 rounded-xl flex items-center gap-3 text-left transition-all cursor-pointer group"
+                      >
+                        <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg group-hover:scale-110 transition-transform">
+                          <ShieldCheck className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-zinc-200 block group-hover:text-emerald-400">Permissões do Sistema</span>
+                          <span className="text-[11px] text-zinc-400">Câmera, Microfone e Notificações</span>
                         </div>
                       </button>
 
@@ -7876,7 +9005,7 @@ export default function App() {
                   <Coins className="w-5 h-5 text-emerald-400" />
                 </div>
                 <div>
-                  <h3 className="text-2xl font-black text-emerald-400 tracking-tight font-mono">{formatBRL(totalGrossEarnings)}</h3>
+                  <h3 className="text-2xl font-black text-blue-400 tracking-tight font-mono">{formatBRL(totalGrossEarnings)}</h3>
                   <div className="mt-2.5 pt-2 border-t border-zinc-850/60 space-y-1 text-[11px]">
                     <div className="flex justify-between text-zinc-300">
                       <span className="text-zinc-400">Trabalho + Recompensas:</span>
@@ -8129,7 +9258,7 @@ export default function App() {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="bg-zinc-900/80 border border-zinc-800 p-3 rounded-xl space-y-1">
                   <span className="text-[10px] uppercase font-bold text-zinc-400">Soma Total</span>
-                  <p className="text-base font-black text-emerald-400 font-mono">{formatBRL(selectedWeekModalData.totalGross)}</p>
+                  <p className="text-base font-black text-blue-400 font-mono">{formatBRL(selectedWeekModalData.totalGross)}</p>
                 </div>
                 <div className="bg-zinc-900/80 border border-zinc-800 p-3 rounded-xl space-y-1">
                   <span className="text-[10px] uppercase font-bold text-zinc-400">Dias Trabalhados</span>
@@ -8201,7 +9330,7 @@ export default function App() {
                           <span className={`text-xs font-black block ${g > 0 ? 'text-emerald-400' : 'text-zinc-500'}`}>
                             {formatBRL(g)}
                           </span>
-                          <span className="text-[10px] text-zinc-400">
+                          <span className={`text-[10px] ${worked ? 'text-zinc-400' : 'text-amber-400 font-bold'}`}>
                             {worked ? 'Trabalhado' : 'Folga'}
                           </span>
                         </div>
@@ -8504,16 +9633,7 @@ export default function App() {
         onClose={() => setIsDeepSweepModalOpen(false)} onBack={() => { setIsDeepSweepModalOpen(false); setIsHelpModalOpen(true); }}
         report={deepSweepReport}
         onRerun={handleDeepSweep}
-      />
-
-      {/* MODAL PARA COLAR CONTAS (EXCEL / WHATSAPP / EXTRATO) */}
-      <PasteFixedExpensesModal
-        isOpen={isPasteFixedExpensesModalOpen}
-        onClose={() => setIsPasteFixedExpensesModalOpen(false)}
-        selectedMonth={selectedMonth}
-        selectedYear={selectedYear}
-        onApplyFixedExpenses={handleApplyExtractedFixedExpenses}
-        fixedExpensesByMonth={fixedExpensesByMonth}
+        onClearCarExpenses={() => handleClearMonthCarExpenses(selectedMonth, selectedYear)}
       />
 
       {/* MODAL DE CONFIRMAÇÃO PARA APAGAR TODOS OS DADOS DA PLANILHA */}
@@ -8559,6 +9679,150 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* POP-UP DE ESCOLHA DE PASTA PARA SALVAR BACKUP */}
+      {isExportFolderModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fade-in">
+          <div className="bg-[#121215] border border-emerald-500/40 rounded-2xl max-w-md w-full p-5 sm:p-6 space-y-4 shadow-2xl relative overflow-hidden">
+            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-600" />
+            
+            {/* Header */}
+            <div className="flex items-start justify-between gap-3 pt-1">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-emerald-500/15 border border-emerald-500/30 rounded-xl text-emerald-400">
+                  <FolderDown className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-100">Onde Deseja Salvar o Backup?</h3>
+                  <p className="text-xs text-zinc-400">
+                    Escolha a pasta de destino no seu aparelho
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsExportFolderModalOpen(false)}
+                className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* File info pill */}
+            <div className="p-2.5 bg-zinc-900/90 border border-zinc-800 rounded-xl flex items-center justify-between text-[11px] text-zinc-300">
+              <div className="flex items-center gap-2 truncate">
+                <FileText className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="truncate font-mono">Backup_Controle_Diario_{new Date().toLocaleDateString('pt-BR').replace(/\//g, '-')}.json</span>
+              </div>
+              <span className="px-2 py-0.5 bg-emerald-500/15 text-emerald-300 font-bold rounded-md shrink-0 ml-2">
+                {exportScope === 'all' ? 'Tudo' : exportScope === 'year' ? 'Ano' : exportScope === 'month' ? 'Mês' : 'Semana'}
+              </span>
+            </div>
+
+            {/* Folder Destination Options */}
+            <div className="space-y-2.5 pt-1">
+              {/* Opção 1: Pasta Documentos */}
+              <button
+                type="button"
+                onClick={() => handleInternalExportWithTarget('documents')}
+                disabled={isExportingBackup}
+                className="w-full p-3.5 bg-zinc-900 hover:bg-zinc-800/90 border border-zinc-800 hover:border-emerald-500/50 rounded-xl flex items-center justify-between text-left transition-all cursor-pointer group hover:scale-[1.01]"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 rounded-lg group-hover:scale-110 transition-transform">
+                    <Folder className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-zinc-100 group-hover:text-emerald-300">Pasta Documentos</span>
+                      <span className="px-1.5 py-0.5 text-[9px] font-bold bg-emerald-500/20 text-emerald-300 rounded border border-emerald-500/30">Recomendado</span>
+                    </div>
+                    <span className="text-[11px] text-zinc-400 block mt-0.5">
+                      Salva direto na pasta pública de Documentos do celular
+                    </span>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-emerald-400 transition-colors shrink-0" />
+              </button>
+
+              {/* Opção 2: Pasta Downloads */}
+              <button
+                type="button"
+                onClick={() => handleInternalExportWithTarget('downloads')}
+                disabled={isExportingBackup}
+                className="w-full p-3.5 bg-zinc-900 hover:bg-zinc-800/90 border border-zinc-800 hover:border-cyan-500/50 rounded-xl flex items-center justify-between text-left transition-all cursor-pointer group hover:scale-[1.01]"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 rounded-lg group-hover:scale-110 transition-transform">
+                    <Download className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-zinc-100 group-hover:text-cyan-300">Pasta Downloads</span>
+                      <span className="px-1.5 py-0.5 text-[9px] font-bold bg-cyan-500/20 text-cyan-300 rounded border border-cyan-500/30">Padrão</span>
+                    </div>
+                    <span className="text-[11px] text-zinc-400 block mt-0.5">
+                      Baixa diretamente para a pasta de Downloads do dispositivo
+                    </span>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-cyan-400 transition-colors shrink-0" />
+              </button>
+
+              {/* Opção 3: Seletor Nativo do Sistema ("Salvar em...") */}
+              <button
+                type="button"
+                onClick={() => handleInternalExportWithTarget('system_picker')}
+                disabled={isExportingBackup}
+                className="w-full p-3.5 bg-zinc-900 hover:bg-zinc-800/90 border border-zinc-800 hover:border-amber-500/50 rounded-xl flex items-center justify-between text-left transition-all cursor-pointer group hover:scale-[1.01]"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-amber-500/15 text-amber-400 border border-amber-500/30 rounded-lg group-hover:scale-110 transition-transform">
+                    <Share2 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-zinc-100 group-hover:text-amber-300">Escolher Pasta no Celular ("Salvar em...")</span>
+                      <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-500/20 text-amber-300 rounded border border-amber-500/30">Nativo</span>
+                    </div>
+                    <span className="text-[11px] text-zinc-400 block mt-0.5">
+                      No APK instalado, abre o menu do Android ("Salvar em...") ou Compartilhar
+                    </span>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-amber-400 transition-colors shrink-0" />
+              </button>
+            </div>
+
+            {/* Aviso informativo de ambiente (Navegador vs APK Nativo) */}
+            {!Boolean((window as any)?.Capacitor?.isNativePlatform?.()) && (
+              <div className="p-2.5 bg-blue-500/10 border border-blue-500/20 rounded-xl text-[11px] text-blue-300 flex items-start gap-2">
+                <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                <p className="leading-relaxed">
+                  <strong>Aviso do Navegador:</strong> No Chrome do celular, o Android bloqueia a escolha manual de pastas por segurança e direciona os arquivos para <strong>Downloads</strong>. No <strong>APK instalado</strong>, o app tem permissão para salvar direto em <strong>Documentos</strong> ou abrir o seletor.
+                </p>
+              </div>
+            )}
+
+            {/* Footer Buttons */}
+            <div className="pt-2 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setIsExportFolderModalOpen(false)}
+                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE SOLICITAÇÃO INICIAL DE PERMISSÕES */}
+      <PermissionsModal
+        isOpen={isPermissionsModalOpen}
+        onComplete={() => setIsPermissionsModalOpen(false)}
+      />
 
       <TollCalculator
         isOpen={isTollCalculatorOpen}
