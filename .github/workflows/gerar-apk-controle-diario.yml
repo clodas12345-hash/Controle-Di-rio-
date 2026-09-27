@@ -73,6 +73,11 @@ jobs:
           npx cap add android
           npx cap sync android
           npm run build:mobile
+          # Atualiza Gradle Wrapper para 8.7 para compatibilidade total com Java 17
+          if [ -f "android/gradle/wrapper/gradle-wrapper.properties" ]; then
+            sed -i 's/distributionUrl=.*/distributionUrl=https\\:\/\/services.gradle.org\/distributions\/gradle-8.7-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
+            echo "✅ Gradle Wrapper atualizado para 8.7"
+          fi
 
       - name: Configurar google-services.json
         run: |
