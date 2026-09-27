@@ -1471,10 +1471,10 @@ export default function App() {
           await Filesystem.writeFile({
             path: jsonFileName,
             data: content,
-            directory: Directory.Data,
+            directory: Directory.Documents,
             encoding: Encoding.UTF8
           });
-          setInternalBackupMessage(`Sucesso! Salvo na memória interna:\n${jsonFileName}`);
+          setInternalBackupMessage(`Sucesso! Salvo na pasta Documentos:\n${jsonFileName}`);
           setTimeout(() => setInternalBackupMessage(null), 6000);
           return;
         } catch (nativeErr) {
