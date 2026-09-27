@@ -1,4 +1,3 @@
-steps:
   - name: Baixar Código do Repositório
     uses: actions/checkout@v4
 
