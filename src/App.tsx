@@ -9,6 +9,7 @@ import { DeepSweepModal, DeepSweepReport } from './components/DeepSweepModal';
 import { MultimodalAiModal } from './components/MultimodalAiModal';
 import { ConflictResolverModal, ConflictData } from './components/ConflictResolverModal';
 import { requestNotificationPermission, sendAppNotification } from './services/notificationService';
+import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import JSZip from 'jszip';
