@@ -26,28 +26,17 @@ jobs:
           java-version: '17'
 
       - name: Configurar Android SDK
-        run: |
-          echo "Configurando Android SDK nativo do runner..."
-          export ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}
-          export ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-$ANDROID_HOME}
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
-          echo "$ANDROID_HOME/tools" >> $GITHUB_PATH
-          echo "$ANDROID_HOME/tools/bin" >> $GITHUB_PATH
+        uses: android-actions/setup-android@v3
 
       - name: Aceitar Licenças e Instalar Build Tools Android
         run: |
-          export ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}
-          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
-          yes | sdkmanager --licenses 2>/dev/null || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools" || true
+          yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
       - name: Instalar Dependências e Capacitor 6
         run: |
           npm install --legacy-peer-deps
-          npm install @capacitor/core@6.2.0 @capacitor/cli@6.2.0 @capacitor/android@6.2.0 @capacitor/camera@6.1.2 @capacitor/filesystem@6.0.2 @capacitor/share@6.0.2 @capacitor/local-notifications@6.1.1 @capacitor/geolocation@6.0.2 sharp --save-dev --legacy-peer-deps
+          npm install @capacitor/core@6.2.0 @capacitor/cli@6.2.0 @capacitor/android@6.2.0 @capacitor/local-notifications@6.1.1 @capacitor/geolocation@6.0.2 @capacitor/camera@6.1.2 @capacitor/filesystem@6.0.2 sharp --save-dev --legacy-peer-deps
 
       - name: Sincronizar Assets do Ícone
         run: |
@@ -73,49 +62,16 @@ jobs:
           npx cap add android
           npx cap sync android
           npm run build:mobile
-          # Garante Gradle Wrapper 8.2.1 oficial do Capacitor 6 (compatibilidade total com AGP 8.2.1 e Java 17)
           if [ -f "android/gradle/wrapper/gradle-wrapper.properties" ]; then
             sed -i 's/distributionUrl=.*/distributionUrl=https\\:\/\/services.gradle.org\/distributions\/gradle-8.2.1-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
-            echo "✅ Gradle Wrapper configurado para 8.2.1 (homologado para Capacitor 6)"
-          fi
-
-      - name: Configurar google-services.json
-        run: |
-          mkdir -p android/app
-          if [ -f "google-services.json" ]; then
-            cp google-services.json android/app/google-services.json
-            echo "✅ google-services.json copiado com sucesso"
-          else
-            echo "Gerando google-services.json oficial..."
-            node -e '
-            const fs = require("fs");
-            const data = {
-              project_info: {
-                project_number: "250327417701",
-                project_id: "controle-diario-23810",
-                storage_bucket: "controle-diario-23810.firebasestorage.app"
-              },
-              client: [{
-                client_info: {
-                  mobilesdk_app_id: "1:250327417701:android:6ade720443c3a1faac578c",
-                  android_client_info: { package_name: "com.gkd.controlediario" }
-                },
-                oauth_client: [],
-                api_key: [{ current_key: "AIzaSyBP0NNKODk1SE1BFJZs47on7oyGCwK0-9w" }],
-                services: { appinvite_service: { other_platform_oauth_client: [] } }
-              }],
-              configuration_version: "1"
-            };
-            fs.writeFileSync("android/app/google-services.json", JSON.stringify(data, null, 2));
-            '
-            echo "✅ google-services.json oficial injetado com sucesso!"
+            echo "✅ Gradle Wrapper configurado para 8.2.1"
           fi
 
       - name: Forçar Versão Maior no Android (find e sed)
         run: |
           echo "Subindo o versionCode para o número do build: ${{ github.run_number }}"
-          find android -name "build.gradle" -exec sed -i "s/versionCode [0-9]*/versionCode ${{ github.run_number }}/g" {} +
-          find android -name "build.gradle" -exec sed -i "s/versionName \"[^\"]*\"/versionName \"1.0.${{ github.run_number }}\"/g" {} +
+          find . -name "build.gradle" -exec sed -i "s/versionCode [0-9]*/versionCode ${{ github.run_number }}/g" {} +
+          find . -name "build.gradle" -exec sed -i "s/versionName \"[^\"]*\"/versionName \"1.0.${{ github.run_number }}\"/g" {} +
           find . -name "capacitor.config.json" -exec sed -i "s/\"versionCode\": [0-9]*/\"versionCode\": ${{ github.run_number }}/g" {} +
           find . -name "app.json" -exec sed -i "s/\"versionCode\": [0-9]*/\"versionCode\": ${{ github.run_number }}/g" {} +
           echo "=== Conferência das linhas alteradas no build.gradle ==="
@@ -129,7 +85,7 @@ jobs:
             echo "✅ Keystore fixo configurado em ~/.android/debug.keystore (garante mesma assinatura em todos os builds)"
           elif [ -f "repo/release.keystore" ]; then
             cp repo/release.keystore ~/.android/debug.keystore
-            echo "✅ Keystore fixo configurado a partir de repo/release.keystore"
+            echo "✅ Keystore fixo configurado em ~/.android/debug.keystore a partir de repo/release.keystore"
           fi
 
       - name: Injetar Todas as Permissões no AndroidManifest.xml
@@ -187,7 +143,6 @@ jobs:
           }
 
           manifest = manifest.replace("<application", permissionsXml + "\n    <application");
-          manifest = manifest.replace(/android:allowBackup="true"/g, `android:allowBackup="false"`);
           fs.writeFileSync(manifestPath, manifest, "utf8");
           console.log("✅ Todas as permissões foram injetadas no AndroidManifest.xml!");
           '
