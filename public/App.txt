@@ -274,6 +274,53 @@ const MONTH_NAMES = [
 
 const WEEK_DAYS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
+// Helpers for monetary numbers, formatting and automatic comma inputs (máscara de moeda automática)
+export const parseNum = (val: any): number => {
+  if (typeof val === 'number') return isNaN(val) ? 0 : Math.round(val * 100) / 100;
+  if (!val) return 0;
+  let s = String(val).trim();
+  if (!s) return 0;
+  if (s.includes(',') && s.includes('.')) {
+    s = s.replace(/\./g, '').replace(',', '.');
+  } else if (s.includes(',')) {
+    s = s.replace(',', '.');
+  }
+  const parsed = parseFloat(s);
+  return isNaN(parsed) ? 0 : Math.round(parsed * 100) / 100;
+};
+
+export const parseI = (val: any): number => {
+  if (typeof val === 'number') return Math.round(val);
+  if (!val) return 0;
+  const cleaned = String(val).replace(/\D/g, '');
+  const parsed = parseInt(cleaned, 10);
+  return isNaN(parsed) ? 0 : parsed;
+};
+
+export const formatMoneyValue = (val: any): string => {
+  if (val === undefined || val === null || val === '' || val === 0 || val === '0') return '';
+  let num: number;
+  if (typeof val === 'number') {
+    num = val;
+  } else {
+    const s = String(val).trim();
+    if (!s) return '';
+    num = parseNum(s);
+  }
+  if (num <= 0) return '';
+  return num.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+export const handleCurrencyChange = (rawInput: string, setter: (val: string) => void) => {
+  const digits = rawInput.replace(/\D/g, '');
+  if (!digits || parseInt(digits, 10) === 0) {
+    setter('');
+    return;
+  }
+  const num = parseInt(digits, 10) / 100;
+  setter(num.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+};
+
 // Preloaded fixed expenses generator by month
 const getPreloadedFixedExpenses = (month: number, year: number = 2024): FixedExpense[] => {
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -898,34 +945,34 @@ export default function App() {
       setValorKwh(String(newLog.valorKwh).replace('.', ','));
       setCapacidadeBateria(String(newLog.capacidadeBateria).replace('.', ','));
       setKmRodado(newLog.kmRodado > 0 ? String(newLog.kmRodado).replace('.', ',') : '');
-      setCustoEnergia(newLog.custoEnergia > 0 ? String(newLog.custoEnergia).replace('.', ',') : '');
-      setDiariaCarro(String(newLog.diariaCarro));
+      setCustoEnergia(newLog.custoEnergia > 0 ? formatMoneyValue(newLog.custoEnergia) : '');
+      setDiariaCarro(newLog.diariaCarro > 0 ? formatMoneyValue(newLog.diariaCarro) : '0,00');
       
-      setWash(newLog.carExpenses.wash > 0 ? String(newLog.carExpenses.wash) : '');
-      setToll(newLog.carExpenses.toll > 0 ? String(newLog.carExpenses.toll) : '');
-      setMaintenance(newLog.carExpenses.maintenance > 0 ? String(newLog.carExpenses.maintenance) : '');
-      setParking(newLog.carExpenses.parking > 0 ? String(newLog.carExpenses.parking) : '');
-      setPublicCharging(newLog.carExpenses.publicCharging > 0 ? String(newLog.carExpenses.publicCharging) : '');
-      setCarOther(newLog.carExpenses.other > 0 ? String(newLog.carExpenses.other) : '');
+      setWash(newLog.carExpenses.wash > 0 ? formatMoneyValue(newLog.carExpenses.wash) : '');
+      setToll(newLog.carExpenses.toll > 0 ? formatMoneyValue(newLog.carExpenses.toll) : '');
+      setMaintenance(newLog.carExpenses.maintenance > 0 ? formatMoneyValue(newLog.carExpenses.maintenance) : '');
+      setParking(newLog.carExpenses.parking > 0 ? formatMoneyValue(newLog.carExpenses.parking) : '');
+      setPublicCharging(newLog.carExpenses.publicCharging ? formatMoneyValue(newLog.carExpenses.publicCharging) : '');
+      setCarOther(newLog.carExpenses.other > 0 ? formatMoneyValue(newLog.carExpenses.other) : '');
 
-      setLunch(newLog.foodExpenses.lunch > 0 ? String(newLog.foodExpenses.lunch) : '');
-      setDinner(newLog.foodExpenses.dinner > 0 ? String(newLog.foodExpenses.dinner) : '');
-      setSnacks(newLog.foodExpenses.snacks > 0 ? String(newLog.foodExpenses.snacks) : '');
-      setCoffee(newLog.foodExpenses.coffee > 0 ? String(newLog.foodExpenses.coffee) : '');
+      setLunch(newLog.foodExpenses.lunch > 0 ? formatMoneyValue(newLog.foodExpenses.lunch) : '');
+      setDinner(newLog.foodExpenses.dinner > 0 ? formatMoneyValue(newLog.foodExpenses.dinner) : '');
+      setSnacks(newLog.foodExpenses.snacks > 0 ? formatMoneyValue(newLog.foodExpenses.snacks) : '');
+      setCoffee(newLog.foodExpenses.coffee > 0 ? formatMoneyValue(newLog.foodExpenses.coffee) : '');
 
-      setURides(String(newLog.appUber.rides));
-      setUEarnings(newLog.appUber.earnings > 0 ? String(newLog.appUber.earnings) : '');
-      setUBonus(newLog.appUber.bonus > 0 ? String(newLog.appUber.bonus) : '');
+      setURides(newLog.appUber.rides > 0 ? String(newLog.appUber.rides) : '');
+      setUEarnings(newLog.appUber.earnings > 0 ? formatMoneyValue(newLog.appUber.earnings) : '');
+      setUBonus(newLog.appUber.bonus > 0 ? formatMoneyValue(newLog.appUber.bonus) : '');
 
-      setNRides(String(newLog.app99.rides));
-      setNEarnings(newLog.app99.earnings > 0 ? String(newLog.app99.earnings) : '');
-      setNBonus(newLog.app99.bonus > 0 ? String(newLog.app99.bonus) : '');
+      setNRides(newLog.app99.rides > 0 ? String(newLog.app99.rides) : '');
+      setNEarnings(newLog.app99.earnings > 0 ? formatMoneyValue(newLog.app99.earnings) : '');
+      setNBonus(newLog.app99.bonus > 0 ? formatMoneyValue(newLog.app99.bonus) : '');
 
-      setPRides(String(newLog.appParticular.rides));
-      setPEarnings(newLog.appParticular.earnings > 0 ? String(newLog.appParticular.earnings) : '');
+      setPRides(newLog.appParticular.rides > 0 ? String(newLog.appParticular.rides) : '');
+      setPEarnings(newLog.appParticular.earnings > 0 ? formatMoneyValue(newLog.appParticular.earnings) : '');
 
-      setRecompensasExtra(newLog.recompensasExtra > 0 ? String(newLog.recompensasExtra) : '');
-      setOutrasFontes(newLog.outrasFontes > 0 ? String(newLog.outrasFontes) : '');
+      setRecompensasExtra(newLog.recompensasExtra > 0 ? formatMoneyValue(newLog.recompensasExtra) : '');
+      setOutrasFontes(newLog.outrasFontes > 0 ? formatMoneyValue(newLog.outrasFontes) : '');
       setExibirNoGeral(newLog.exibirNoGeral);
       setIsEnergyCostOverridden(true);
     }
@@ -2142,8 +2189,8 @@ export default function App() {
   const handleSaveFixedExpense = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newFixedName || !newFixedValue) return;
-    const val = parseFloat(newFixedValue);
-    if (isNaN(val)) return;
+    const val = parseNum(newFixedValue);
+    if (isNaN(val) || val <= 0) return;
 
     if (editingFixedId) {
       setFixedExpensesForCurrentMonth(prev => prev.map(item => item.id === editingFixedId ? {
@@ -2190,7 +2237,7 @@ export default function App() {
   const handleStartEditFixedExpense = (item: FixedExpense) => {
     setEditingFixedId(item.id);
     setNewFixedName(item.name);
-    setNewFixedValue(String(item.value));
+    setNewFixedValue(item.value > 0 ? formatMoneyValue(item.value) : '');
     setNewFixedInstallments(item.installments || '');
     setNewFixedStartDate(item.startDate || '');
     setIsAddingFixed(true);
@@ -2614,7 +2661,7 @@ export default function App() {
       setValorKwh(existing.valorKwh > 0 ? String(existing.valorKwh).replace('.', ',') : defaultValKwh);
       setCapacidadeBateria(existing.capacidadeBateria > 0 ? String(existing.capacidadeBateria).replace('.', ',') : defaultCap);
       setKmRodado(existing.kmRodado && existing.kmRodado > 0 ? String(existing.kmRodado).replace('.', ',') : '');
-      setCustoEnergia(existing.custoEnergia && existing.custoEnergia > 0 ? String(existing.custoEnergia).replace('.', ',') : '');
+      setCustoEnergia(existing.custoEnergia && existing.custoEnergia > 0 ? formatMoneyValue(existing.custoEnergia) : '');
       
       // If there is a saved energy cost, lock it so the auto-calc useEffect doesn't overwrite it
       setIsEnergyCostOverridden(existing.custoEnergia > 0);
@@ -2628,33 +2675,33 @@ export default function App() {
         resolvedDailyRate = isSunday ? 0 : dailyRate;
       }
 
-      setDiariaCarro(existing.diariaCarro && existing.diariaCarro > 0 ? String(existing.diariaCarro) : String(resolvedDailyRate));
+      setDiariaCarro(existing.diariaCarro && existing.diariaCarro > 0 ? formatMoneyValue(existing.diariaCarro) : (resolvedDailyRate > 0 ? formatMoneyValue(resolvedDailyRate) : '0,00'));
       
-      setWash(existing.carExpenses?.wash && existing.carExpenses.wash > 0 ? String(existing.carExpenses.wash) : '');
-      setToll(existing.carExpenses?.toll && existing.carExpenses.toll > 0 ? String(existing.carExpenses.toll) : '');
-      setMaintenance(existing.carExpenses?.maintenance && existing.carExpenses.maintenance > 0 ? String(existing.carExpenses.maintenance) : '');
-      setParking(existing.carExpenses?.parking && existing.carExpenses.parking > 0 ? String(existing.carExpenses.parking) : '');
-      setPublicCharging(existing.carExpenses?.publicCharging && existing.carExpenses.publicCharging > 0 ? String(existing.carExpenses.publicCharging) : '');
-      setCarOther(existing.carExpenses?.other && existing.carExpenses.other > 0 ? String(existing.carExpenses.other) : '');
+      setWash(existing.carExpenses?.wash && existing.carExpenses.wash > 0 ? formatMoneyValue(existing.carExpenses.wash) : '');
+      setToll(existing.carExpenses?.toll && existing.carExpenses.toll > 0 ? formatMoneyValue(existing.carExpenses.toll) : '');
+      setMaintenance(existing.carExpenses?.maintenance && existing.carExpenses.maintenance > 0 ? formatMoneyValue(existing.carExpenses.maintenance) : '');
+      setParking(existing.carExpenses?.parking && existing.carExpenses.parking > 0 ? formatMoneyValue(existing.carExpenses.parking) : '');
+      setPublicCharging(existing.carExpenses?.publicCharging && existing.carExpenses.publicCharging > 0 ? formatMoneyValue(existing.carExpenses.publicCharging) : '');
+      setCarOther(existing.carExpenses?.other && existing.carExpenses.other > 0 ? formatMoneyValue(existing.carExpenses.other) : '');
 
-      setLunch(existing.foodExpenses?.lunch && existing.foodExpenses.lunch > 0 ? String(existing.foodExpenses.lunch) : '');
-      setDinner(existing.foodExpenses?.dinner && existing.foodExpenses.dinner > 0 ? String(existing.foodExpenses.dinner) : '');
-      setSnacks(existing.foodExpenses?.snacks && existing.foodExpenses.snacks > 0 ? String(existing.foodExpenses.snacks) : '');
-      setCoffee(existing.foodExpenses?.coffee && existing.foodExpenses.coffee > 0 ? String(existing.foodExpenses.coffee) : '');
+      setLunch(existing.foodExpenses?.lunch && existing.foodExpenses.lunch > 0 ? formatMoneyValue(existing.foodExpenses.lunch) : '');
+      setDinner(existing.foodExpenses?.dinner && existing.foodExpenses.dinner > 0 ? formatMoneyValue(existing.foodExpenses.dinner) : '');
+      setSnacks(existing.foodExpenses?.snacks && existing.foodExpenses.snacks > 0 ? formatMoneyValue(existing.foodExpenses.snacks) : '');
+      setCoffee(existing.foodExpenses?.coffee && existing.foodExpenses.coffee > 0 ? formatMoneyValue(existing.foodExpenses.coffee) : '');
 
       setURides(existing.appUber.rides && existing.appUber.rides > 0 ? String(existing.appUber.rides) : '');
-      setUEarnings(existing.appUber.earnings && existing.appUber.earnings > 0 ? String(existing.appUber.earnings) : '');
-      setUBonus(existing.appUber.bonus && existing.appUber.bonus > 0 ? String(existing.appUber.bonus) : '');
+      setUEarnings(existing.appUber.earnings && existing.appUber.earnings > 0 ? formatMoneyValue(existing.appUber.earnings) : '');
+      setUBonus(existing.appUber.bonus && existing.appUber.bonus > 0 ? formatMoneyValue(existing.appUber.bonus) : '');
 
       setNRides(existing.app99.rides && existing.app99.rides > 0 ? String(existing.app99.rides) : '');
-      setNEarnings(existing.app99.earnings && existing.app99.earnings > 0 ? String(existing.app99.earnings) : '');
-      setNBonus(existing.app99.bonus && existing.app99.bonus > 0 ? String(existing.app99.bonus) : '');
+      setNEarnings(existing.app99.earnings && existing.app99.earnings > 0 ? formatMoneyValue(existing.app99.earnings) : '');
+      setNBonus(existing.app99.bonus && existing.app99.bonus > 0 ? formatMoneyValue(existing.app99.bonus) : '');
 
       setPRides(existing.appParticular.rides && existing.appParticular.rides > 0 ? String(existing.appParticular.rides) : '');
-      setPEarnings(existing.appParticular.earnings && existing.appParticular.earnings > 0 ? String(existing.appParticular.earnings) : '');
+      setPEarnings(existing.appParticular.earnings && existing.appParticular.earnings > 0 ? formatMoneyValue(existing.appParticular.earnings) : '');
 
-      setRecompensasExtra(existing.recompensasExtra && existing.recompensasExtra > 0 ? String(existing.recompensasExtra) : '');
-      setOutrasFontes(existing.outrasFontes && existing.outrasFontes > 0 ? String(existing.outrasFontes) : '');
+      setRecompensasExtra(existing.recompensasExtra && existing.recompensasExtra > 0 ? formatMoneyValue(existing.recompensasExtra) : '');
+      setOutrasFontes(existing.outrasFontes && existing.outrasFontes > 0 ? formatMoneyValue(existing.outrasFontes) : '');
       setExibirNoGeral(existing.exibirNoGeral);
     } else {
       // It's a new entry for this date - pre-fill based on work routine
@@ -2675,7 +2722,7 @@ export default function App() {
       setValorKwh(defaultValKwh);
       setCapacidadeBateria(defaultCap);
       setKmRodado('');
-      setDiariaCarro(resolvedDailyRate > 0 ? String(resolvedDailyRate) : '');
+      setDiariaCarro(resolvedDailyRate > 0 ? formatMoneyValue(resolvedDailyRate) : '');
       setCustoEnergia('');
       
       setWash('');
@@ -4991,11 +5038,11 @@ export default function App() {
                         <div className="space-y-1">
                           <label className="text-[9px] text-zinc-500 block uppercase">Valor (R$)</label>
                           <input
-                            type="number"
-                            step="0.01"
-                            placeholder="0.00"
+                            type="text"
+                            inputMode="numeric"
+                            placeholder="0,00"
                             value={newFixedValue}
-                            onChange={e => setNewFixedValue(e.target.value)}
+                            onChange={e => handleCurrencyChange(e.target.value, setNewFixedValue)}
                             className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs font-semibold focus:outline-none focus:border-emerald-500 font-mono text-zinc-100"
                             required
                           />
@@ -5213,11 +5260,11 @@ export default function App() {
                   <div className="space-y-1">
                     <label className="text-[10px] text-zinc-400 block uppercase font-bold">Valor Mensal (R$)</label>
                     <input
-                      type="number"
-                      step="0.01"
-                      placeholder="0.00"
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="0,00"
                       value={newFixedValue}
-                      onChange={e => setNewFixedValue(e.target.value)}
+                      onChange={e => handleCurrencyChange(e.target.value, setNewFixedValue)}
                       className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-2.5 text-xs font-semibold focus:outline-none focus:border-emerald-500 font-mono text-zinc-100"
                       required
                     />
@@ -6867,15 +6914,13 @@ export default function App() {
                       <input
                         tabIndex={22}
                         type="text"
-                        inputMode="decimal"
-                        placeholder="0.00"
+                        inputMode="numeric"
+                        placeholder="0,00"
                         value={custoEnergia}
-                         
-                        onChange={(e) => {
-                          const val = e.target.value.replace(/[^\d.,]/g, '');
+                        onChange={(e) => handleCurrencyChange(e.target.value, (val) => {
                           setCustoEnergia(val);
                           setIsEnergyCostOverridden(true);
-                        }}
+                        })}
                         className="w-full bg-[#0d0d0f] border border-zinc-800/50 rounded-xl text-sm py-3 px-4 font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 transition-all"
                       />
                     </div>
@@ -6904,12 +6949,12 @@ export default function App() {
 
                       <div className="relative">
                         <input
-                          type="number"
-                          step="0.01"
-                          placeholder={isDayOff ? "0.00 (Folga)" : "0.00"}
+                          type="text"
+                          inputMode="numeric"
+                          placeholder={isDayOff ? "0,00 (Folga)" : "0,00"}
                           value={isDayOff ? '' : diariaCarro}
                           disabled={isDayOff}
-                          onChange={(e) => setDiariaCarro(e.target.value)}
+                          onChange={(e) => handleCurrencyChange(e.target.value, setDiariaCarro)}
                           className={`w-full bg-[#11141a] border ${isDayOff ? 'border-zinc-850 text-zinc-600 bg-zinc-950/60' : 'border-blue-900/50 text-zinc-100 focus:ring-1 focus:ring-blue-500'} rounded-lg text-xs py-2 px-2.5 font-mono outline-none`}
                         />
                         {isDayOff && (
@@ -6946,7 +6991,7 @@ export default function App() {
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-mono font-bold text-pink-400">
-                        {formatBRL((parseFloat(wash) || 0) + (parseFloat(toll) || 0) + (parseFloat(maintenance) || 0) + (parseFloat(parking) || 0) + (parseFloat(publicCharging) || 0) + (parseFloat(carOther) || 0))}
+                        {formatBRL(parseNum(wash) + parseNum(toll) + parseNum(maintenance) + parseNum(parking) + parseNum(publicCharging) + parseNum(carOther))}
                       </span>
                       {isCarExpensesOpen ? <ChevronUp className="w-4 h-4 text-zinc-400" /> : <ChevronDown className="w-4 h-4 text-zinc-400" />}
                     </div>
@@ -6957,12 +7002,11 @@ export default function App() {
                       <div className="space-y-1 col-span-2">
                         <label className="text-[10px] text-zinc-400 font-medium">Lava-jato / Limpeza (R$)</label>
                         <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="0,00"
                           value={wash}
-                           
-                          onChange={(e) => setWash(e.target.value)}
+                          onChange={(e) => handleCurrencyChange(e.target.value, setWash)}
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
@@ -6979,60 +7023,55 @@ export default function App() {
                           </button>
                         </div>
                         <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="0,00"
                           value={toll}
-                           
-                          onChange={(e) => setToll(e.target.value)}
+                          onChange={(e) => handleCurrencyChange(e.target.value, setToll)}
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
                       <div className="space-y-1">
                         <label className="text-[10px] text-zinc-400 font-medium">Estacionamento (R$)</label>
                         <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="0,00"
                           value={parking}
-                           
-                          onChange={(e) => setParking(e.target.value)}
+                          onChange={(e) => handleCurrencyChange(e.target.value, setParking)}
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
                       <div className="space-y-1">
                         <label className="text-[10px] text-zinc-400 font-medium">Recarga Externa/Rua (R$)</label>
                         <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="0,00"
                           value={publicCharging}
-                           
-                          onChange={(e) => setPublicCharging(e.target.value)}
+                          onChange={(e) => handleCurrencyChange(e.target.value, setPublicCharging)}
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
                       <div className="space-y-1">
                         <label className="text-[10px] text-zinc-400 font-medium">Manutenção Extra (R$)</label>
                         <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="0,00"
                           value={maintenance}
-                           
-                          onChange={(e) => setMaintenance(e.target.value)}
+                          onChange={(e) => handleCurrencyChange(e.target.value, setMaintenance)}
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
                       <div className="space-y-1">
                         <label className="text-[10px] text-zinc-400 font-medium">Outros Extra (R$)</label>
                         <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="0,00"
                           value={carOther}
-                           
-                          onChange={(e) => setCarOther(e.target.value)}
+                          onChange={(e) => handleCurrencyChange(e.target.value, setCarOther)}
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
@@ -7053,7 +7092,7 @@ export default function App() {
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-mono font-bold text-amber-500">
-                        {formatBRL((parseFloat(lunch) || 0) + (parseFloat(dinner) || 0) + (parseFloat(snacks) || 0) + (parseFloat(coffee) || 0))}
+                        {formatBRL(parseNum(lunch) + parseNum(dinner) + parseNum(snacks) + parseNum(coffee))}
                       </span>
                       {isFoodExpensesOpen ? <ChevronUp className="w-4 h-4 text-zinc-400" /> : <ChevronDown className="w-4 h-4 text-zinc-400" />}
                     </div>
@@ -7064,48 +7103,44 @@ export default function App() {
                       <div className="space-y-1">
                         <label className="text-[10px] text-zinc-400 font-medium">Café da manhã (R$)</label>
                         <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="0,00"
                           value={snacks}
-                           
-                          onChange={(e) => setSnacks(e.target.value)}
+                          onChange={(e) => handleCurrencyChange(e.target.value, setSnacks)}
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
                       <div className="space-y-1">
                         <label className="text-[10px] text-zinc-400 font-medium">Almoço (R$)</label>
                         <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="0,00"
                           value={lunch}
-                           
-                          onChange={(e) => setLunch(e.target.value)}
+                          onChange={(e) => handleCurrencyChange(e.target.value, setLunch)}
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
                       <div className="space-y-1">
                         <label className="text-[10px] text-zinc-400 font-medium">Café da tarde (R$)</label>
                         <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="0,00"
                           value={coffee}
-                           
-                          onChange={(e) => setCoffee(e.target.value)}
+                          onChange={(e) => handleCurrencyChange(e.target.value, setCoffee)}
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
                       <div className="space-y-1">
                         <label className="text-[10px] text-zinc-400 font-medium">Jantar (R$)</label>
                         <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="0,00"
                           value={dinner}
-                           
-                          onChange={(e) => setDinner(e.target.value)}
+                          onChange={(e) => handleCurrencyChange(e.target.value, setDinner)}
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
@@ -7135,7 +7170,6 @@ export default function App() {
                         type="number"
                         placeholder="Ex: 8"
                         value={nRides}
-                         
                         onChange={(e) => setNRides(e.target.value)}
                         onKeyDown={(e) => handleModalInputNext(e, nEarningsInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
@@ -7147,12 +7181,11 @@ export default function App() {
                         ref={nEarningsInputRef}
                         tabIndex={4}
                         enterKeyHint="next"
-                        type="number"
-                        step="0.01"
-                        placeholder="0.00"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="0,00"
                         value={nEarnings}
-                         
-                        onChange={(e) => setNEarnings(e.target.value)}
+                        onChange={(e) => handleCurrencyChange(e.target.value, setNEarnings)}
                         onKeyDown={(e) => handleModalInputNext(e, uRidesInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
@@ -7163,12 +7196,11 @@ export default function App() {
                         ref={nBonusInputRef}
                         tabIndex={24}
                         enterKeyHint="next"
-                        type="number"
-                        step="0.01"
-                        placeholder="0.00"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="0,00"
                         value={nBonus}
-                         
-                        onChange={(e) => setNBonus(e.target.value)}
+                        onChange={(e) => handleCurrencyChange(e.target.value, setNBonus)}
                         onKeyDown={(e) => handleModalInputNext(e, uRidesInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
@@ -7189,7 +7221,6 @@ export default function App() {
                         type="number"
                         placeholder="Ex: 12"
                         value={uRides}
-                         
                         onChange={(e) => setURides(e.target.value)}
                         onKeyDown={(e) => handleModalInputNext(e, uEarningsInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
@@ -7201,12 +7232,11 @@ export default function App() {
                         ref={uEarningsInputRef}
                         tabIndex={6}
                         enterKeyHint="next"
-                        type="number"
-                        step="0.01"
-                        placeholder="0.00"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="0,00"
                         value={uEarnings}
-                         
-                        onChange={(e) => setUEarnings(e.target.value)}
+                        onChange={(e) => handleCurrencyChange(e.target.value, setUEarnings)}
                         onKeyDown={(e) => handleModalInputNext(e, pRidesInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
@@ -7217,12 +7247,11 @@ export default function App() {
                         ref={uBonusInputRef}
                         tabIndex={25}
                         enterKeyHint="next"
-                        type="number"
-                        step="0.01"
-                        placeholder="0.00"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="0,00"
                         value={uBonus}
-                         
-                        onChange={(e) => setUBonus(e.target.value)}
+                        onChange={(e) => handleCurrencyChange(e.target.value, setUBonus)}
                         onKeyDown={(e) => handleModalInputNext(e, pRidesInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
@@ -7243,7 +7272,6 @@ export default function App() {
                         type="number"
                         placeholder="Ex: 2"
                         value={pRides}
-                         
                         onChange={(e) => setPRides(e.target.value)}
                         onKeyDown={(e) => handleModalInputNext(e, pEarningsInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
@@ -7255,12 +7283,11 @@ export default function App() {
                         ref={pEarningsInputRef}
                         tabIndex={8}
                         enterKeyHint="done"
-                        type="number"
-                        step="0.01"
-                        placeholder="0.00"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="0,00"
                         value={pEarnings}
-                         
-                        onChange={(e) => setPEarnings(e.target.value)}
+                        onChange={(e) => handleCurrencyChange(e.target.value, setPEarnings)}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
                             e.preventDefault();
@@ -7278,12 +7305,11 @@ export default function App() {
                   <div className="space-y-1">
                     <label className="text-[10px] text-emerald-400 block font-bold">Recompensas / Bônus do Dia (Soma no valor do dia)</label>
                     <input
-                      type="number"
-                      step="0.01"
-                      placeholder="0.00"
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="0,00"
                       value={recompensasExtra}
-                       
-                      onChange={(e) => setRecompensasExtra(e.target.value)}
+                      onChange={(e) => handleCurrencyChange(e.target.value, setRecompensasExtra)}
                       className="w-full bg-[#11141a] border border-emerald-900/40 focus:border-emerald-500 rounded-lg text-xs py-2 px-2.5 font-mono text-emerald-300"
                     />
                   </div>
@@ -7293,12 +7319,11 @@ export default function App() {
                       <span className="text-[9px] font-normal text-amber-500/80 block">Não soma no dia • Conta no consolidado do mês</span>
                     </label>
                     <input
-                      type="number"
-                      step="0.01"
-                      placeholder="0.00"
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="0,00"
                       value={outrasFontes}
-                       
-                      onChange={(e) => setOutrasFontes(e.target.value)}
+                      onChange={(e) => handleCurrencyChange(e.target.value, setOutrasFontes)}
                       className="w-full bg-[#11141a] border border-amber-900/40 focus:border-amber-500 rounded-lg text-xs py-2 px-2.5 font-mono text-amber-300"
                     />
                   </div>
@@ -8784,11 +8809,11 @@ export default function App() {
 
                           <div className="relative">
                             <input
-                              type="number"
-                              step="0.01"
-                              value={carProfile.monthlyCarExpense !== undefined && carProfile.monthlyCarExpense !== null && carProfile.monthlyCarExpense > 0 ? carProfile.monthlyCarExpense : ''}
-                              onChange={(e) => setCarProfile(prev => ({ ...prev, monthlyCarExpense: parseFloat(String(e.target.value).replace(',', '.')) || 0 }))}
-                              placeholder="0.00"
+                              type="text"
+                              inputMode="numeric"
+                              value={carProfile.monthlyCarExpense ? formatMoneyValue(carProfile.monthlyCarExpense) : ''}
+                              onChange={(e) => handleCurrencyChange(e.target.value, (val) => setCarProfile(prev => ({ ...prev, monthlyCarExpense: parseNum(val) })))}
+                              placeholder="0,00"
                               className="w-full bg-zinc-950 border border-purple-900/60 focus:border-purple-400 rounded-xl px-3.5 py-2.5 text-sm font-mono font-bold text-purple-200 outline-none transition-colors"
                             />
                             <span className="absolute right-3.5 top-2.5 text-xs text-purple-400 font-mono font-bold">R$ / MÊS</span>

@@ -28,11 +28,22 @@ export const TollCalculator: React.FC<TollCalculatorProps> = ({
 
   if (!isOpen) return null;
 
+  const handleCurrencyChange = (val: string) => {
+    const digits = val.replace(/\D/g, '');
+    if (!digits || parseInt(digits, 10) === 0) {
+      setNewValue('');
+      return;
+    }
+    const num = parseInt(digits, 10) / 100;
+    setNewValue(num.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  };
+
   const handleAdd = () => {
     if (!newValue) return;
-    const val = newValue.replace(',', '.');
-    if (!isNaN(parseFloat(val))) {
-      setValues([...values, val]);
+    const cleanStr = newValue.replace(/\./g, '').replace(',', '.');
+    const val = parseFloat(cleanStr);
+    if (!isNaN(val) && val > 0) {
+      setValues([...values, String(val)]);
       setNewValue('');
     }
   };
@@ -74,10 +85,10 @@ export const TollCalculator: React.FC<TollCalculatorProps> = ({
           <div className="flex gap-2">
             <input
               type="text"
-              inputMode="decimal"
-              placeholder="Valor (ex: 7,50)"
+              inputMode="numeric"
+              placeholder="0,00"
               value={newValue}
-              onChange={(e) => setNewValue(e.target.value)}
+              onChange={(e) => handleCurrencyChange(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
               className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl text-xs py-2 px-3 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
               autoFocus
