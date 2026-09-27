@@ -73,10 +73,10 @@ jobs:
           npx cap add android
           npx cap sync android
           npm run build:mobile
-          # Atualiza Gradle Wrapper para 8.7 para compatibilidade total com Java 17
+          # Garante Gradle Wrapper 8.2.1 oficial do Capacitor 6 (compatibilidade total com AGP 8.2.1 e Java 17)
           if [ -f "android/gradle/wrapper/gradle-wrapper.properties" ]; then
-            sed -i 's/distributionUrl=.*/distributionUrl=https\\:\/\/services.gradle.org\/distributions\/gradle-8.7-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
-            echo "✅ Gradle Wrapper atualizado para 8.7"
+            sed -i 's/distributionUrl=.*/distributionUrl=https\\:\/\/services.gradle.org\/distributions\/gradle-8.2.1-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
+            echo "✅ Gradle Wrapper configurado para 8.2.1 (homologado para Capacitor 6)"
           fi
 
       - name: Configurar google-services.json
@@ -124,8 +124,8 @@ EOF
       - name: Forçar Versão Maior no Android (find e sed)
         run: |
           echo "Subindo o versionCode para o número do build: ${{ github.run_number }}"
-          find . -name "build.gradle" -exec sed -i "s/versionCode [0-9]*/versionCode ${{ github.run_number }}/g" {} +
-          find . -name "build.gradle" -exec sed -i "s/versionName \"[^\"]*\"/versionName \"1.0.${{ github.run_number }}\"/g" {} +
+          find android -name "build.gradle" -exec sed -i "s/versionCode [0-9]*/versionCode ${{ github.run_number }}/g" {} +
+          find android -name "build.gradle" -exec sed -i "s/versionName \"[^\"]*\"/versionName \"1.0.${{ github.run_number }}\"/g" {} +
           find . -name "capacitor.config.json" -exec sed -i "s/\"versionCode\": [0-9]*/\"versionCode\": ${{ github.run_number }}/g" {} +
           find . -name "app.json" -exec sed -i "s/\"versionCode\": [0-9]*/\"versionCode\": ${{ github.run_number }}/g" {} +
           echo "=== Conferência das linhas alteradas no build.gradle ==="
