@@ -1255,6 +1255,37 @@ export default function App() {
   // Highlighted row inside the table
   const [highlightedRowId, setHighlightedRowId] = useState<string | null>(null);
 
+  // Fast Navigation Refs for Modal Inputs (Bateria -> KM -> 99 Qtd -> 99 Valor -> Uber Qtd -> Uber Valor -> Particular Qtd -> Particular Valor)
+  const sobrouBateriaInputRef = useRef<HTMLInputElement>(null);
+  const kmRodadoInputRef = useRef<HTMLInputElement>(null);
+  const nRidesInputRef = useRef<HTMLInputElement>(null);
+  const nEarningsInputRef = useRef<HTMLInputElement>(null);
+  const nBonusInputRef = useRef<HTMLInputElement>(null);
+  const uRidesInputRef = useRef<HTMLInputElement>(null);
+  const uEarningsInputRef = useRef<HTMLInputElement>(null);
+  const uBonusInputRef = useRef<HTMLInputElement>(null);
+  const pRidesInputRef = useRef<HTMLInputElement>(null);
+  const pEarningsInputRef = useRef<HTMLInputElement>(null);
+
+  const focusNextModalInput = (ref: React.RefObject<HTMLInputElement | null>) => {
+    if (ref.current) {
+      ref.current.focus();
+      try {
+        ref.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        ref.current.select();
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  const handleModalInputNext = (e: React.KeyboardEvent<HTMLInputElement>, targetRef: React.RefObject<HTMLInputElement | null>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      focusNextModalInput(targetRef);
+    }
+  };
+
   // Fixed Monthly Expenses State
   const currentMonthFixedTotal = useMemo(() => {
     return fixedExpenses.reduce((acc, curr) => acc + (curr.value || 0), 0);
@@ -1372,7 +1403,6 @@ export default function App() {
       const month = String(now.getMonth() + 1).padStart(2, '0');
       const year = now.getFullYear();
       const dateStr = `${day}-${month}-${year}`;
-      const zipFileName = `Backup_Controle_Diario_${dateStr}.zip`;
       const jsonFileName = `Backup_Controle_Diario_${dateStr}.json`;
 
       let filteredLogs = logs;
@@ -1434,44 +1464,41 @@ export default function App() {
       };
 
       const content = JSON.stringify(backupData, null, 2);
-      
-      const zip = new JSZip();
-      zip.file(jsonFileName, content);
 
       const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
       if (isCapacitorNative && typeof Filesystem !== 'undefined') {
         try {
-          const zipBase64 = await zip.generateAsync({ type: 'base64' });
           await Filesystem.writeFile({
-            path: zipFileName,
-            data: zipBase64,
-            directory: Directory.Documents
+            path: jsonFileName,
+            data: content,
+            directory: Directory.Data,
+            encoding: Encoding.UTF8
           });
-          setInternalBackupMessage(`Sucesso! Salvo na memória interna:\n${zipFileName}`);
+          setInternalBackupMessage(`Sucesso! Salvo na memória interna:\n${jsonFileName}`);
           setTimeout(() => setInternalBackupMessage(null), 6000);
           return;
         } catch (nativeErr) {
-          console.warn('Filesystem zip write failed, falling back to download:', nativeErr);
+          console.warn('Filesystem JSON write failed, falling back to download:', nativeErr);
         }
       }
 
-      // Browser download as zip blob
-      const zipBlob = await zip.generateAsync({ type: 'blob' });
-      const url = URL.createObjectURL(zipBlob);
+      // Browser download directly as pure JSON file
+      const blob = new Blob([content], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', zipFileName);
+      link.setAttribute('download', jsonFileName);
       link.style.display = 'none';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
 
-      setInternalBackupMessage(`Sucesso! Backup ZIP (${scope.toUpperCase()}) baixado:\n${zipFileName}`);
+      setInternalBackupMessage(`Sucesso! Arquivo JSON (${scope.toUpperCase()}) baixado:\n${jsonFileName}`);
       setTimeout(() => setInternalBackupMessage(null), 6000);
     } catch (e: any) {
       console.error('Erro ao exportar backup interno:', e);
-      setInternalBackupMessage('Erro ao gerar arquivo ZIP de backup.');
+      setInternalBackupMessage('Erro ao gerar arquivo JSON de backup.');
       setTimeout(() => setInternalBackupMessage(null), 6000);
     }
   };
@@ -4244,71 +4271,172 @@ export default function App() {
                 </div>
 
                 {isAllYear ? (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-2">
-                    {Array.from({ length: 12 }, (_, i) => {
-                      const mNum = i + 1;
-                      const mLogs = logs.filter(l => {
-                        const [y, m] = l.date.split('-').map(Number);
-                        return y === selectedYear && m === mNum;
-                      });
-                      if (mLogs.length === 0) return null;
+                  <div className="space-y-3 pt-2">
+                    {/* Consolidated Annual Summary Bar */}
+                    {(() => {
+                      let yearGross = 0;
+                      let yearAnjo = 0;
+                      let yearTotalCosts = 0;
+                      let yearNet = 0;
+                      let activeMonthsCount = 0;
 
-                      let mGross = 0;
-                      let mCosts = 0;
-                      let mRides = 0;
-                      mLogs.forEach(l => {
-                        if (l.exibirNoGeral) {
-                          const uTotal = l.appUber.earnings + l.appUber.bonus;
-                          const nTotal = l.app99.earnings + l.app99.bonus;
-                          const pTotal = l.appParticular.earnings;
-                          mGross += uTotal + nTotal + pTotal + (l.recompensasExtra || 0) + (l.outrasFontes || 0);
-                          mRides += l.appUber.rides + l.app99.rides + l.appParticular.rides;
-                        }
-                        const dayCarExp = (Object.values(l.carExpenses) as number[]).reduce((a, b) => a + b, 0);
-                        const dayFoodExp = (Object.values(l.foodExpenses) as number[]).reduce((a, b) => a + b, 0);
-                        mCosts += l.custoEnergia + l.diariaCarro + dayCarExp + dayFoodExp;
-                      });
+                      for (let m = 1; m <= 12; m++) {
+                        const mLogs = logs.filter(l => {
+                          const [y, mNum] = l.date.split('-').map(Number);
+                          return y === selectedYear && mNum === m;
+                        });
+                        if (mLogs.length === 0) continue;
+                        activeMonthsCount++;
 
-                      const mKeyPadded = `${selectedYear}-${String(mNum).padStart(2, '0')}`;
-                      const mKeyUnpadded = `${selectedYear}-${mNum}`;
-                      const mFixedList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
-                      const mFixedSum = mFixedList.reduce((sum, item) => sum + item.value, 0);
+                        let mGross = 0;
+                        let mCosts = 0;
+                        let mAnjo = 0;
+                        mLogs.forEach(l => {
+                          if (l.exibirNoGeral) {
+                            const uTotal = l.appUber.earnings + l.appUber.bonus;
+                            const nTotal = l.app99.earnings + l.app99.bonus;
+                            const pTotal = l.appParticular.earnings;
+                            const dayAnjo = l.anjo !== undefined ? l.anjo : (l.outrasFontes || 0);
+                            mAnjo += dayAnjo;
+                            mGross += uTotal + nTotal + pTotal + (l.recompensasExtra || 0) + dayAnjo;
+                          }
+                          const dayCarExp = (Object.values(l.carExpenses) as number[]).reduce((a, b) => a + b, 0);
+                          const dayFoodExp = (Object.values(l.foodExpenses) as number[]).reduce((a, b) => a + b, 0);
+                          mCosts += l.custoEnergia + l.diariaCarro + dayCarExp + dayFoodExp;
+                        });
 
-                      const mLogsDiariaSum = mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0);
-                      const mEffectiveFixed = mFixedSum > 0 ? mFixedSum : mLogsDiariaSum;
-                      const mTotalCosts = (mCosts - mLogsDiariaSum) + mEffectiveFixed;
-                      const mNet = mGross - mTotalCosts;
+                        const mKeyPadded = `${selectedYear}-${String(m).padStart(2, '0')}`;
+                        const mKeyUnpadded = `${selectedYear}-${m}`;
+                        const mFixedList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
+                        const mFixedSum = mFixedList.reduce((sum, item) => sum + item.value, 0);
+                        const mLogsDiariaSum = mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0);
+                        const mEffectiveFixed = mFixedSum > 0 ? mFixedSum : mLogsDiariaSum;
+                        const mTotalCosts = (mCosts - mLogsDiariaSum) + mEffectiveFixed;
+                        const mNet = mGross - mTotalCosts;
+
+                        yearGross += mGross;
+                        yearAnjo += mAnjo;
+                        yearTotalCosts += mTotalCosts;
+                        yearNet += mNet;
+                      }
+
+                      if (activeMonthsCount === 0) return null;
 
                       return (
-                        <div 
-                          key={mNum}
-                          onClick={() => {
-                            setSelectedMonth(mNum);
-                            setIsAllYear(false);
-                          }}
-                          className="bg-zinc-950/70 border border-zinc-800 hover:border-emerald-500/50 p-3 rounded-xl cursor-pointer transition-all hover:scale-[1.02] space-y-1.5 group"
-                        >
-                          <div className="flex justify-between items-center">
-                            <span className="text-xs font-black text-emerald-400 group-hover:text-emerald-300">{MONTH_NAMES[i]}</span>
-                            <span className="text-[10px] bg-zinc-850 px-2 py-0.5 rounded-md text-zinc-400 font-mono">{mLogs.length} dias</span>
+                        <div className="bg-gradient-to-r from-emerald-950/40 via-zinc-900 to-zinc-900 border border-emerald-500/30 rounded-xl p-3 sm:p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 mb-2 border-b border-zinc-800/80">
+                            <span className="text-xs font-black uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                              <span>📊</span> Acumulado de {selectedYear} ({activeMonthsCount} {activeMonthsCount === 1 ? 'mês' : 'meses ativos'})
+                            </span>
+                            <span className="text-[11px] font-mono text-zinc-400">
+                              Consolidado Geral
+                            </span>
                           </div>
-                          <div className="space-y-0.5 font-mono text-[11px]">
-                            <div className="flex justify-between text-zinc-300">
-                              <span className="text-zinc-500 text-[10px] font-sans">Faturamento:</span>
-                              <span className="font-bold text-blue-400">{formatBRL(mGross)}</span>
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 font-mono text-center">
+                            <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-850">
+                              <span className="text-[10px] text-zinc-400 block font-sans font-medium">Faturamento</span>
+                              <span className="text-xs sm:text-sm font-black text-blue-400">{formatBRL(yearGross)}</span>
                             </div>
-                            <div className="flex justify-between text-zinc-300">
-                              <span className="text-zinc-500 text-[10px] font-sans">Custos Ops:</span>
-                              <span className="text-amber-400">{formatBRL(mTotalCosts)}</span>
+                            {yearAnjo > 0 && (
+                              <div className="bg-amber-950/20 p-2.5 rounded-lg border border-amber-500/30">
+                                <span className="text-[10px] text-amber-400 block font-sans font-medium flex items-center justify-center gap-1">
+                                  <span>👼</span> Anjo Recebido
+                                </span>
+                                <span className="text-xs sm:text-sm font-black text-amber-300">{formatBRL(yearAnjo)}</span>
+                              </div>
+                            )}
+                            <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-850">
+                              <span className="text-[10px] text-zinc-400 block font-sans font-medium">Custos Operacionais</span>
+                              <span className="text-xs sm:text-sm font-black text-amber-400">{formatBRL(yearTotalCosts)}</span>
                             </div>
-                            <div className="flex justify-between border-t border-zinc-850 pt-1 text-[11px] font-bold">
-                              <span className="text-zinc-400 text-[10px] font-sans">Lucro:</span>
-                              <span className={mNet >= 0 ? 'text-emerald-400' : 'text-red-400'}>{formatBRL(mNet)}</span>
+                            <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-emerald-500/40 col-span-2 sm:col-span-1">
+                              <span className="text-[10px] text-emerald-400 block font-sans font-bold">Lucro Líquido Acumulado</span>
+                              <span className={`text-xs sm:text-sm font-black ${yearNet >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                {formatBRL(yearNet)}
+                              </span>
                             </div>
                           </div>
                         </div>
                       );
-                    })}
+                    })()}
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      {Array.from({ length: 12 }, (_, i) => {
+                        const mNum = i + 1;
+                        const mLogs = logs.filter(l => {
+                          const [y, m] = l.date.split('-').map(Number);
+                          return y === selectedYear && m === mNum;
+                        });
+                        if (mLogs.length === 0) return null;
+
+                        let mGross = 0;
+                        let mCosts = 0;
+                        let mRides = 0;
+                        let mAnjo = 0;
+                        mLogs.forEach(l => {
+                          if (l.exibirNoGeral) {
+                            const uTotal = l.appUber.earnings + l.appUber.bonus;
+                            const nTotal = l.app99.earnings + l.app99.bonus;
+                            const pTotal = l.appParticular.earnings;
+                            const dayAnjo = l.anjo !== undefined ? l.anjo : (l.outrasFontes || 0);
+                            mAnjo += dayAnjo;
+                            mGross += uTotal + nTotal + pTotal + (l.recompensasExtra || 0) + dayAnjo;
+                            mRides += l.appUber.rides + l.app99.rides + l.appParticular.rides;
+                          }
+                          const dayCarExp = (Object.values(l.carExpenses) as number[]).reduce((a, b) => a + b, 0);
+                          const dayFoodExp = (Object.values(l.foodExpenses) as number[]).reduce((a, b) => a + b, 0);
+                          mCosts += l.custoEnergia + l.diariaCarro + dayCarExp + dayFoodExp;
+                        });
+
+                        const mKeyPadded = `${selectedYear}-${String(mNum).padStart(2, '0')}`;
+                        const mKeyUnpadded = `${selectedYear}-${mNum}`;
+                        const mFixedList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
+                        const mFixedSum = mFixedList.reduce((sum, item) => sum + item.value, 0);
+
+                        const mLogsDiariaSum = mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0);
+                        const mEffectiveFixed = mFixedSum > 0 ? mFixedSum : mLogsDiariaSum;
+                        const mTotalCosts = (mCosts - mLogsDiariaSum) + mEffectiveFixed;
+                        const mNet = mGross - mTotalCosts;
+
+                        return (
+                          <div 
+                            key={mNum}
+                            onClick={() => {
+                              setSelectedMonth(mNum);
+                              setIsAllYear(false);
+                            }}
+                            className="bg-zinc-950/70 border border-zinc-800 hover:border-emerald-500/50 p-3 rounded-xl cursor-pointer transition-all hover:scale-[1.02] space-y-1.5 group"
+                          >
+                            <div className="flex justify-between items-center">
+                              <span className="text-xs font-black text-emerald-400 group-hover:text-emerald-300">{MONTH_NAMES[i]}</span>
+                              <span className="text-[10px] bg-zinc-850 px-2 py-0.5 rounded-md text-zinc-400 font-mono">{mLogs.length} dias</span>
+                            </div>
+                            <div className="space-y-0.5 font-mono text-[11px]">
+                              <div className="flex justify-between text-zinc-300">
+                                <span className="text-zinc-500 text-[10px] font-sans">Faturamento:</span>
+                                <span className="font-bold text-blue-400">{formatBRL(mGross)}</span>
+                              </div>
+                              {mAnjo > 0 && (
+                                <div className="flex justify-between text-amber-300">
+                                  <span className="text-amber-500 text-[10px] font-sans flex items-center gap-0.5">
+                                    <span>👼</span> Anjo:
+                                  </span>
+                                  <span className="font-bold text-amber-400">{formatBRL(mAnjo)}</span>
+                                </div>
+                              )}
+                              <div className="flex justify-between text-zinc-300">
+                                <span className="text-zinc-500 text-[10px] font-sans">Custos Ops:</span>
+                                <span className="text-amber-400">{formatBRL(mTotalCosts)}</span>
+                              </div>
+                              <div className="flex justify-between border-t border-zinc-850 pt-1 text-[11px] font-bold">
+                                <span className="text-zinc-400 text-[10px] font-sans">Lucro:</span>
+                                <span className={mNet >= 0 ? 'text-emerald-400' : 'text-red-400'}>{formatBRL(mNet)}</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 ) : (
                   /* Calendar grid */
@@ -6506,6 +6634,9 @@ export default function App() {
                         )}
                       </div>
                       <input
+                        ref={sobrouBateriaInputRef}
+                        tabIndex={1}
+                        enterKeyHint="next"
                         type="text"
                         inputMode="decimal"
                         placeholder="Ex: 20"
@@ -6517,6 +6648,7 @@ export default function App() {
                           setLastEditedEnergyField('bateria');
                           setIsEnergyCostOverridden(false);
                         }}
+                        onKeyDown={(e) => handleModalInputNext(e, kmRodadoInputRef)}
                         className="w-full bg-[#0d0d0f] border border-zinc-800/50 rounded-xl text-sm py-3 px-4 font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 transition-all"
                       />
                     </div>
@@ -6531,6 +6663,7 @@ export default function App() {
                         )}
                       </div>
                       <input
+                        tabIndex={20}
                         type="text"
                         inputMode="decimal"
                         value={valorKwh}
@@ -6557,6 +6690,7 @@ export default function App() {
                         )}
                       </div>
                       <input
+                        tabIndex={21}
                         type="text"
                         inputMode="decimal"
                         value={capacidadeBateria}
@@ -6585,6 +6719,9 @@ export default function App() {
                         )}
                       </div>
                       <input
+                        ref={kmRodadoInputRef}
+                        tabIndex={2}
+                        enterKeyHint="next"
                         type="text"
                         inputMode="numeric"
                         placeholder="Ex: 180"
@@ -6604,6 +6741,7 @@ export default function App() {
                             triggerBatteryEstimatePopup(num);
                           }
                         }}
+                        onKeyDown={(e) => handleModalInputNext(e, nRidesInputRef)}
                         className="w-full bg-[#0d0d0f] border border-zinc-800/50 rounded-xl text-sm py-3 px-4 font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 transition-all"
                       />
                     </div>
@@ -6611,6 +6749,7 @@ export default function App() {
                     <div className="space-y-1.5">
                       <label className="text-[11px] text-zinc-500 block font-bold uppercase tracking-wider">{carProfile.vehicleType === 'eletrico' ? 'Custo Energia (R$)' : 'Custo Abastec. (R$)'}</label>
                       <input
+                        tabIndex={22}
                         type="text"
                         inputMode="decimal"
                         placeholder="0.00"
@@ -6874,35 +7013,47 @@ export default function App() {
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Corridas</label>
                       <input
+                        ref={nRidesInputRef}
+                        tabIndex={3}
+                        enterKeyHint="next"
                         type="number"
                         placeholder="Ex: 8"
                         value={nRides}
                          
                         onChange={(e) => setNRides(e.target.value)}
+                        onKeyDown={(e) => handleModalInputNext(e, nEarningsInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Ganhos (R$)</label>
                       <input
+                        ref={nEarningsInputRef}
+                        tabIndex={4}
+                        enterKeyHint="next"
                         type="number"
                         step="0.01"
                         placeholder="0.00"
                         value={nEarnings}
                          
                         onChange={(e) => setNEarnings(e.target.value)}
+                        onKeyDown={(e) => handleModalInputNext(e, uRidesInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Recomp. (R$)</label>
                       <input
+                        ref={nBonusInputRef}
+                        tabIndex={24}
+                        enterKeyHint="next"
                         type="number"
                         step="0.01"
                         placeholder="0.00"
                         value={nBonus}
                          
                         onChange={(e) => setNBonus(e.target.value)}
+                        onKeyDown={(e) => handleModalInputNext(e, uRidesInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
@@ -6916,35 +7067,47 @@ export default function App() {
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Corridas</label>
                       <input
+                        ref={uRidesInputRef}
+                        tabIndex={5}
+                        enterKeyHint="next"
                         type="number"
                         placeholder="Ex: 12"
                         value={uRides}
                          
                         onChange={(e) => setURides(e.target.value)}
+                        onKeyDown={(e) => handleModalInputNext(e, uEarningsInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Ganhos (R$)</label>
                       <input
+                        ref={uEarningsInputRef}
+                        tabIndex={6}
+                        enterKeyHint="next"
                         type="number"
                         step="0.01"
                         placeholder="0.00"
                         value={uEarnings}
                          
                         onChange={(e) => setUEarnings(e.target.value)}
+                        onKeyDown={(e) => handleModalInputNext(e, pRidesInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Recomp. (R$)</label>
                       <input
+                        ref={uBonusInputRef}
+                        tabIndex={25}
+                        enterKeyHint="next"
                         type="number"
                         step="0.01"
                         placeholder="0.00"
                         value={uBonus}
                          
                         onChange={(e) => setUBonus(e.target.value)}
+                        onKeyDown={(e) => handleModalInputNext(e, pRidesInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
@@ -6958,23 +7121,36 @@ export default function App() {
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Corridas</label>
                       <input
+                        ref={pRidesInputRef}
+                        tabIndex={7}
+                        enterKeyHint="next"
                         type="number"
                         placeholder="Ex: 2"
                         value={pRides}
                          
                         onChange={(e) => setPRides(e.target.value)}
+                        onKeyDown={(e) => handleModalInputNext(e, pEarningsInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] text-zinc-400">Valor (R$)</label>
                       <input
+                        ref={pEarningsInputRef}
+                        tabIndex={8}
+                        enterKeyHint="done"
                         type="number"
                         step="0.01"
                         placeholder="0.00"
                         value={pEarnings}
                          
                         onChange={(e) => setPEarnings(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleSaveLog(e);
+                          }
+                        }}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
                     </div>
@@ -7782,8 +7958,8 @@ export default function App() {
                           <Upload className="w-4 h-4 rotate-180 stroke-[2.5]" />
                         </div>
                         <div>
-                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Exportar Backup ({exportScope === 'all' ? 'Tudo' : exportScope === 'year' ? 'Ano' : exportScope === 'month' ? 'Mês' : 'Semana'})</span>
-                          <span className="text-[11px] text-zinc-400">Salvar Backup_Controle_Diario_DD-MM-AAAA.json</span>
+                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Exportar Backup JSON ({exportScope === 'all' ? 'Tudo' : exportScope === 'year' ? 'Ano' : exportScope === 'month' ? 'Mês' : 'Semana'})</span>
+                          <span className="text-[11px] text-zinc-400">Baixar arquivo .json direto (Backup_Controle_Diario_DD-MM-AAAA.json)</span>
                         </div>
                       </button>
 
