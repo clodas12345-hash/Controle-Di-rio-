@@ -73,20 +73,15 @@ jobs:
           npx cap add android
           npx cap sync android
           npm run build:mobile
-          # Atualiza Gradle Wrapper para 8.7 para compatibilidade total com Java 17
-          if [ -f "android/gradle/wrapper/gradle-wrapper.properties" ]; then
-            sed -i 's/distributionUrl=.*/distributionUrl=https\\:\/\/services.gradle.org\/distributions\/gradle-8.7-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
-            echo "✅ Gradle Wrapper atualizado para 8.7"
-          fi
 
       - name: Configurar google-services.json
         run: |
           mkdir -p android/app
           if [ -f "google-services.json" ]; then
             cp google-services.json android/app/google-services.json
-            echo "✅ google-services.json copiado do repositório"
+            echo "✅ google-services.json copiado com sucesso"
           else
-            echo "Criando google-services.json oficial automaticamente..."
+            echo "Gerando google-services.json oficial..."
             cat << 'EOF' > android/app/google-services.json
 {
   "project_info": {
@@ -121,49 +116,6 @@ EOF
             echo "✅ google-services.json oficial injetado com sucesso!"
           fi
 
-      - name: Injetar Plugin google-services no build.gradle Raiz
-        run: |
-          node -e '
-          const fs = require("fs");
-          const path = "android/build.gradle";
-          let content = fs.readFileSync(path, "utf8");
-          if (!content.includes("com.google.gms:google-services")) {
-            content = content.replace(
-              /dependencies\s*{/,
-              `dependencies {\n        classpath "com.google.gms:google-services:4.4.2"`
-            );
-            fs.writeFileSync(path, content, "utf8");
-            console.log("✅ Plugin google-services adicionado ao build.gradle raiz");
-          }
-          '
-
-      - name: Injetar Plugin e Dependências do Firebase no build.gradle do App
-        run: |
-          node -e '
-          const fs = require("fs");
-          const path = "android/app/build.gradle";
-          let content = fs.readFileSync(path, "utf8");
-          if (!content.includes("com.google.gms.google-services")) {
-            content += "\napply plugin: \"com.google.gms.google-services\"\n";
-          }
-          if (!content.includes("firebase-firestore")) {
-            content = content.replace(
-              /dependencies\s*{/,
-              `dependencies {\n    implementation platform("com.google.firebase:firebase-bom:33.5.1")\n    implementation "com.google.firebase:firebase-firestore"\n    implementation "com.google.firebase:firebase-auth"`
-            );
-          }
-          fs.writeFileSync(path, content, "utf8");
-          console.log("✅ Plugin e dependências do Firebase adicionados ao build.gradle do app");
-          '
-
-      - name: Forçar minSdkVersion 23 (exigido pelo firebase-auth)
-        run: |
-          if [ -f "android/variables.gradle" ]; then
-            sed -i 's/minSdkVersion = [0-9]*/minSdkVersion = 23/' android/variables.gradle
-            echo "✅ minSdkVersion ajustado em variables.gradle"
-            grep -n "minSdkVersion" android/variables.gradle || true
-          fi
-
       - name: Forçar Versão Maior no Android (find e sed)
         run: |
           echo "Subindo o versionCode para o número do build: ${{ github.run_number }}"
@@ -180,6 +132,9 @@ EOF
           if [ -f "release.keystore" ]; then
             cp release.keystore ~/.android/debug.keystore
             echo "✅ Keystore fixo configurado em ~/.android/debug.keystore (garante mesma assinatura em todos os builds)"
+          elif [ -f "repo/release.keystore" ]; then
+            cp repo/release.keystore ~/.android/debug.keystore
+            echo "✅ Keystore fixo configurado a partir de repo/release.keystore"
           fi
 
       - name: Injetar Todas as Permissões no AndroidManifest.xml
@@ -237,7 +192,6 @@ EOF
           }
 
           manifest = manifest.replace("<application", permissionsXml + "\n    <application");
-          // Desativa o Backup Automático do Android para garantir que reinstalações comecem 100% limpas (sem restaurar dados anteriores do Google Drive)
           manifest = manifest.replace(/android:allowBackup="true"/g, `android:allowBackup="false"`);
           fs.writeFileSync(manifestPath, manifest, "utf8");
           console.log("✅ Todas as permissões foram injetadas no AndroidManifest.xml!");
@@ -278,7 +232,6 @@ EOF
               const target = path.join(resDir, s.dir);
               if (!fs.existsSync(target)) fs.mkdirSync(target, { recursive: true });
 
-              // 88% da área: escala exata para bater visualmente com VoltaLá e Rastreador
               const logoSizeFg = Math.round(s.fg * 0.88);
               const logoBufferFg = await sharp(iconPath)
                 .resize(logoSizeFg, logoSizeFg, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
@@ -297,7 +250,6 @@ EOF
               .png()
               .toFile(path.join(target, "ic_launcher_foreground.png"));
 
-              // Ícone legado quadrado (88%)
               const legacySize = Math.round(s.size * 0.88);
               const logoLegacy = await sharp(iconPath)
                 .resize(legacySize, legacySize, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
@@ -316,7 +268,6 @@ EOF
               .png()
               .toFile(path.join(target, "ic_launcher.png"));
 
-              // Ícone redondo (88%)
               await sharp({
                 create: {
                   width: s.size,
@@ -343,11 +294,14 @@ EOF
           run().catch(console.error);
           '
 
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Compilar APK Android
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m"
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Separar Arquivo APK
         run: |
