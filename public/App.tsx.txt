@@ -72,7 +72,8 @@ import {
   Target,
   Clipboard,
   Copy,
-  RefreshCw
+  RefreshCw,
+  Eye
 } from 'lucide-react';
 import { DEFAULT_CAR_PROFILE, DEFAULT_FIXED_EXPENSES_BY_MONTH, DEFAULT_DAILY_LOGS } from './defaultBackupData';
 import { motion } from 'motion/react';
@@ -763,6 +764,8 @@ export default function App() {
             customWorkDays: parsed.customWorkDays ?? DEFAULT_CAR_PROFILE.customWorkDays,
             insurerName: parsed.insurerName ?? '',
             insurancePolicyNumber: parsed.insurancePolicyNumber ?? '',
+            insurancePolicyPdfUrl: parsed.insurancePolicyPdfUrl ?? '',
+            insurancePolicyPdfName: parsed.insurancePolicyPdfName ?? '',
             nextMaintenanceKm: parsed.nextMaintenanceKm ?? DEFAULT_CAR_PROFILE.nextMaintenanceKm,
             notes: parsed.notes ?? ''
           };
@@ -1763,7 +1766,6 @@ export default function App() {
       isDatePickerModalOpen || 
       isHelpModalOpen || 
       isProjectionModalOpen || 
-      isWeeklySummaryOpen || 
       isConflictModalOpen || 
       isConfirmClearAllModalOpen || 
       isDeepSweepModalOpen
@@ -1780,7 +1782,6 @@ export default function App() {
     isDatePickerModalOpen, 
     isHelpModalOpen, 
     isProjectionModalOpen, 
-    isWeeklySummaryOpen, 
     isConflictModalOpen, 
     isConfirmClearAllModalOpen, 
     isDeepSweepModalOpen
@@ -2574,6 +2575,88 @@ export default function App() {
     handleDeepSweep();
   };
 
+  const handleInsurancePolicyUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (uploadEvent) => {
+      const result = uploadEvent.target?.result as string;
+      if (result) {
+        setCarProfile(prev => ({
+          ...prev,
+          insurancePolicyPdfUrl: result,
+          insurancePolicyPdfName: file.name
+        }));
+        setSweepNotification(`Apólice "${file.name}" anexada com sucesso aos dados do veículo!`);
+        setTimeout(() => setSweepNotification(null), 5000);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleDownloadPolicy = () => {
+    if (!carProfile.insurancePolicyPdfUrl) return;
+    const link = document.createElement('a');
+    link.href = carProfile.insurancePolicyPdfUrl;
+    link.download = carProfile.insurancePolicyPdfName || 'Apolice_Seguro_Carro.pdf';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleViewPolicy = () => {
+    if (!carProfile.insurancePolicyPdfUrl) return;
+    const win = window.open();
+    if (win) {
+      win.document.write(`
+        <html>
+          <head><title>${carProfile.insurancePolicyPdfName || 'Apólice de Seguro'}</title></head>
+          <body style="margin:0; background:#111; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh;">
+            <iframe src="${carProfile.insurancePolicyPdfUrl}" style="width:100%; height:90vh; border:none;"></iframe>
+            <div style="padding:12px; color:#fff; font-family:sans-serif; text-align:center;">
+              <a href="${carProfile.insurancePolicyPdfUrl}" download="${carProfile.insurancePolicyPdfName || 'apolice.pdf'}" style="color:#10b981; font-weight:bold; font-size:16px; text-decoration:none; background:#065f46; padding:8px 16px; border-radius:8px;">Baixar Arquivo PDF/Foto</a>
+            </div>
+          </body>
+        </html>
+      `);
+    }
+  };
+
+  const handleSharePolicyWhatsApp = async () => {
+    const text = `📊 *GKD Controle Diário* - Apólice de Seguro do Veículo\nVeículo: ${carProfile.modelName || 'Carro'} (${carProfile.licensePlate || 'Placa'})\nSeguradora: ${carProfile.insurerName || 'Não informada'}\nApólice Nº: ${carProfile.insurancePolicyNumber || 'Não informado'}`;
+    
+    if (navigator.share && typeof File !== 'undefined' && carProfile.insurancePolicyPdfUrl) {
+      try {
+        const res = await fetch(carProfile.insurancePolicyPdfUrl);
+        const blob = await res.blob();
+        const file = new File([blob], carProfile.insurancePolicyPdfName || 'Apolice_Seguro.pdf', { type: blob.type || 'application/pdf' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            title: 'Apólice de Seguro do Veículo',
+            text: text,
+            files: [file]
+          });
+          return;
+        }
+      } catch (err) {
+        console.warn('Share file failed:', err);
+      }
+    }
+
+    const waUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(text + '\n\n(Apólice armazenada com segurança no aplicativo GKD Controle Diário)')}`;
+    window.open(waUrl, '_blank');
+  };
+
+  const handleRemovePolicy = () => {
+    setCarProfile(prev => ({
+      ...prev,
+      insurancePolicyPdfUrl: '',
+      insurancePolicyPdfName: ''
+    }));
+    setSweepNotification('Apólice de seguro removida do cadastro.');
+    setTimeout(() => setSweepNotification(null), 4000);
+  };
+
   const handleConsolidateData = () => {
     const auditedLogs = logs.map(sanitizeDailyLog);
 
@@ -3214,134 +3297,259 @@ export default function App() {
 
     const todayStr = new Date().toISOString().slice(0, 10);
 
-    filteredLogs.forEach(log => {
-      const isOff = Boolean(log.isDayOff);
-      if (isOff) {
-        totalOffDays++;
-      } else {
-        totalWorkingDays++;
+    if (isAllYear) {
+      let aggCosts = 0;
+      let aggNet = 0;
+
+      for (let m = 1; m <= 12; m++) {
+        const mLogs = logs.filter(l => {
+          const [y, mNum] = l.date.split('-').map(Number);
+          return y === selectedYear && mNum === m;
+        });
+        if (mLogs.length === 0) continue;
+
+        let mOpGross = 0;
+        let mCosts = 0;
+        let mLogsDiariaSum = 0;
+
+        mLogs.forEach(log => {
+          const isOff = Boolean(log.isDayOff);
+          if (isOff) totalOffDays++; else totalWorkingDays++;
+
+          const dayCarExpenses = (Object.values(log.carExpenses || {}) as number[]).reduce((a, b) => a + (typeof b === 'number' ? b : 0), 0);
+          const dayFoodExpenses = (Object.values(log.foodExpenses || {}) as number[]).reduce((a, b) => a + (typeof b === 'number' ? b : 0), 0);
+
+          const uTotal = (log.appUber?.earnings || 0) + (log.appUber?.bonus || 0);
+          const nTotal = (log.app99?.earnings || 0) + (log.app99?.bonus || 0);
+          const pTotal = (log.appParticular?.earnings || 0);
+          const recomp = log.recompensasExtra || 0;
+          const anjo = (log.anjo !== undefined ? log.anjo : (log.outrasFontes || 0));
+
+          const hasActivity = (log.kmRodado > 0) || ((uTotal + nTotal + pTotal + recomp) > 0) || (anjo > 0) || (dayFoodExpenses > 0) || (dayCarExpenses > 0);
+          if (!isOff && (hasActivity || log.date <= todayStr)) {
+            elapsedWorkingDays++;
+          }
+
+          if (log.exibirNoGeral !== false) {
+            const dayUberRides = (log.appUber?.rides || 0) > 0 ? log.appUber.rides : (uTotal > 0 ? Math.max(1, Math.round(uTotal / 23)) : 0);
+            const day99Rides = (log.app99?.rides || 0) > 0 ? log.app99.rides : (nTotal > 0 ? Math.max(1, Math.round(nTotal / 22)) : 0);
+            const dayPartRides = pTotal > 0 ? ((log.appParticular?.rides || 0) > 0 ? log.appParticular.rides : Math.max(1, Math.round(pTotal / 35))) : 0;
+
+            uberTotal += uTotal;
+            uberRides += dayUberRides;
+            app99Total += nTotal;
+            app99Rides += day99Rides;
+            particularTotal += pTotal;
+            particularRides += dayPartRides;
+            totalRecompensas += recomp;
+            totalAnjo += anjo;
+
+            const dayOp = uTotal + nTotal + pTotal + recomp;
+            totalOperationalEarnings += dayOp;
+            totalGrossEarnings += dayOp;
+            totalRides += (dayUberRides + day99Rides + dayPartRides);
+            mOpGross += dayOp;
+          }
+
+          totalEnergyCost += (log.custoEnergia || 0);
+          totalCarRental += (log.diariaCarro || 0);
+          mLogsDiariaSum += (log.diariaCarro || 0);
+          totalCarExpenses += dayCarExpenses;
+          totalFoodExpenses += dayFoodExpenses;
+          totalKM += (log.kmRodado || 0);
+
+          mCosts += (log.custoEnergia || 0) + (log.diariaCarro || 0) + dayCarExpenses + dayFoodExpenses;
+        });
+
+        // --- CORREÇÃO: Ignorar meses sem faturamento operacional ---
+        if (mOpGross === 0) continue;
+
+        const mKeyPadded = `${selectedYear}-${String(m).padStart(2, '0')}`;
+        const mKeyUnpadded = `${selectedYear}-${m}`;
+        const mFixedList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
+        const mFixedSum = mFixedList.reduce((sum, item) => sum + item.value, 0);
+        const mEffectiveFixed = mFixedSum > 0 ? mFixedSum : mLogsDiariaSum;
+        const mTotalCosts = (mCosts - mLogsDiariaSum) + mEffectiveFixed;
+        const mNet = mOpGross - mTotalCosts;
+
+        aggCosts += mTotalCosts;
+        aggNet += mNet;
       }
 
-      const dayCarExpenses = (Object.values(log.carExpenses || {}) as number[]).reduce((a, b) => a + (typeof b === 'number' ? b : 0), 0);
-      const dayFoodExpenses = (Object.values(log.foodExpenses || {}) as number[]).reduce((a, b) => a + (typeof b === 'number' ? b : 0), 0);
+      const totalVariableCosts = totalEnergyCost + totalCarExpenses + totalFoodExpenses;
+      const totalFixedExpenses = Array.from(new Set(filteredLogs.map(l => l.date.slice(0, 7)))).reduce((acc: number, monthStr: string) => {
+        const [y, m] = monthStr.split('-').map(Number);
+        const mKeyPadded = `${y}-${String(m).padStart(2, '0')}`;
+        const mKeyUnpadded = `${y}-${m}`;
+        const mList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
+        return acc + mList.reduce((sum, item) => sum + item.value, 0);
+      }, 0);
 
-      const uTotal = (log.appUber?.earnings || 0) + (log.appUber?.bonus || 0);
-      const nTotal = (log.app99?.earnings || 0) + (log.app99?.bonus || 0);
-      const pTotal = (log.appParticular?.earnings || 0);
-      const recomp = log.recompensasExtra || 0;
-      const anjo = (log.anjo !== undefined ? log.anjo : (log.outrasFontes || 0));
-      const dayGross = uTotal + nTotal + pTotal + recomp; // Anjo não soma no dia
-      const otherCosts = log.diariaCarro + dayCarExpenses + dayFoodExpenses;
-      const net = dayGross - (log.custoEnergia + otherCosts);
+      const effectiveFixedCosts = totalFixedExpenses > 0 ? totalFixedExpenses : totalCarRental;
+      const totalCosts = aggCosts;
+      const totalDailyNet = totalGrossEarnings - totalVariableCosts - totalCarRental;
+      const netOperational = totalGrossEarnings - totalVariableCosts;
+      const realNetEarnings = aggNet;
 
-      const hasActivity = (log.kmRodado > 0) ||
-        (dayGross > 0) ||
-        (anjo > 0) ||
-        (dayFoodExpenses > 0) ||
-        (dayCarExpenses > 0);
+      const profitMargin = totalGrossEarnings > 0 ? (netOperational / totalGrossEarnings) * 100 : 0;
+      const realProfitMargin = totalGrossEarnings > 0 ? (realNetEarnings / totalGrossEarnings) * 100 : 0;
+      const earningsPerKM = totalKM > 0 ? totalGrossEarnings / totalKM : 0;
+      const energyCostPerKM = totalKM > 0 ? totalEnergyCost / totalKM : 0;
+      const netEarningsPerKM = totalKM > 0 ? realNetEarnings / totalKM : 0;
+      const dailyFoodAverage = elapsedWorkingDays > 0 ? totalFoodExpenses / elapsedWorkingDays : 0;
 
-      if (!isOff && (hasActivity || log.date <= todayStr)) {
-        elapsedWorkingDays++;
-      }
+      return {
+        totalGrossEarnings,
+        totalEnergyCost,
+        totalCarRental,
+        totalCarExpenses,
+        totalFoodExpenses,
+        totalKM: Math.round(totalKM * 100) / 100,
+        totalRides,
+        uberTotal,
+        uberRides,
+        app99Total,
+        app99Rides,
+        particularTotal,
+        particularRides,
+        totalRecompensas,
+        totalAnjo,
+        totalOperationalEarnings,
+        totalWorkingDays,
+        totalOffDays,
+        elapsedWorkingDays,
+        dailyFoodAverage,
+        totalVariableCosts,
+        totalFixedExpenses,
+        effectiveFixedCosts,
+        totalCosts,
+        totalDailyNet,
+        netOperational,
+        realNetEarnings,
+        profitMargin,
+        realProfitMargin,
+        earningsPerKM,
+        energyCostPerKM,
+        netEarningsPerKM
+      };
+    } else {
+      filteredLogs.forEach(log => {
+        const isOff = Boolean(log.isDayOff);
+        if (isOff) {
+          totalOffDays++;
+        } else {
+          totalWorkingDays++;
+        }
 
-      if (log.exibirNoGeral !== false) {
-        // Gross App Earnings
-        const dayUberRides = (log.appUber?.rides || 0) > 0 ? log.appUber.rides : (uTotal > 0 ? Math.max(1, Math.round(uTotal / 23)) : 0);
-        const day99Rides = (log.app99?.rides || 0) > 0 ? log.app99.rides : (nTotal > 0 ? Math.max(1, Math.round(nTotal / 22)) : 0);
-        const dayPartRides = pTotal > 0 ? ((log.appParticular?.rides || 0) > 0 ? log.appParticular.rides : Math.max(1, Math.round(pTotal / 35))) : 0;
+        const dayCarExpenses = (Object.values(log.carExpenses || {}) as number[]).reduce((a, b) => a + (typeof b === 'number' ? b : 0), 0);
+        const dayFoodExpenses = (Object.values(log.foodExpenses || {}) as number[]).reduce((a, b) => a + (typeof b === 'number' ? b : 0), 0);
 
-        uberTotal += uTotal;
-        uberRides += dayUberRides;
+        const uTotal = (log.appUber?.earnings || 0) + (log.appUber?.bonus || 0);
+        const nTotal = (log.app99?.earnings || 0) + (log.app99?.bonus || 0);
+        const pTotal = (log.appParticular?.earnings || 0);
+        const recomp = log.recompensasExtra || 0;
+        const anjo = (log.anjo !== undefined ? log.anjo : (log.outrasFontes || 0));
+        const dayGross = uTotal + nTotal + pTotal + recomp; // Anjo não soma no dia
+        const otherCosts = log.diariaCarro + dayCarExpenses + dayFoodExpenses;
+        const net = dayGross - (log.custoEnergia + otherCosts);
 
-        app99Total += nTotal;
-        app99Rides += day99Rides;
+        const hasActivity = (log.kmRodado > 0) ||
+          (dayGross > 0) ||
+          (anjo > 0) ||
+          (dayFoodExpenses > 0) ||
+          (dayCarExpenses > 0);
 
-        particularTotal += pTotal;
-        particularRides += dayPartRides;
+        if (!isOff && (hasActivity || log.date <= todayStr)) {
+          elapsedWorkingDays++;
+        }
 
-        totalRecompensas += recomp;
-        totalAnjo += anjo;
+        if (log.exibirNoGeral !== false) {
+          const dayUberRides = (log.appUber?.rides || 0) > 0 ? log.appUber.rides : (uTotal > 0 ? Math.max(1, Math.round(uTotal / 23)) : 0);
+          const day99Rides = (log.app99?.rides || 0) > 0 ? log.app99.rides : (nTotal > 0 ? Math.max(1, Math.round(nTotal / 22)) : 0);
+          const dayPartRides = pTotal > 0 ? ((log.appParticular?.rides || 0) > 0 ? log.appParticular.rides : Math.max(1, Math.round(pTotal / 35))) : 0;
 
-        const dayOp = uTotal + nTotal + pTotal + recomp;
-        totalOperationalEarnings += dayOp;
-        totalGrossEarnings += (dayOp + anjo); // Consolidado do Mês (inclui Anjo recebidos)
-        totalRides += (dayUberRides + day99Rides + dayPartRides);
-      }
+          uberTotal += uTotal;
+          uberRides += dayUberRides;
 
-      // Costs
-      totalEnergyCost += (log.custoEnergia || 0);
-      totalCarRental += (log.diariaCarro || 0);
-      
-      totalCarExpenses += dayCarExpenses;
-      totalFoodExpenses += dayFoodExpenses;
+          app99Total += nTotal;
+          app99Rides += day99Rides;
 
-      totalKM += (log.kmRodado || 0);
-    });
+          particularTotal += pTotal;
+          particularRides += dayPartRides;
 
-    const totalVariableCosts = totalEnergyCost + totalCarExpenses + totalFoodExpenses;
+          totalRecompensas += recomp;
+          totalAnjo += anjo;
 
-    const totalFixedExpenses = isAllYear 
-      ? Array.from(new Set(filteredLogs.map(l => l.date.slice(0, 7)))).reduce((acc: number, monthStr: string) => {
-          const [y, m] = monthStr.split('-').map(Number);
-          const mKeyPadded = `${y}-${String(m).padStart(2, '0')}`;
-          const mKeyUnpadded = `${y}-${m}`;
-          const mList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
-          return acc + mList.reduce((sum, item) => sum + item.value, 0);
-        }, 0)
-      : fixedExpenses.reduce((sum, item) => sum + item.value, 0);
+          const dayOp = uTotal + nTotal + pTotal + recomp;
+          totalOperationalEarnings += dayOp;
+          totalGrossEarnings += dayOp;
+          totalRides += (dayUberRides + day99Rides + dayPartRides);
+        }
 
-    const effectiveFixedCosts = totalFixedExpenses > 0 ? totalFixedExpenses : totalCarRental;
-    const totalCosts = totalVariableCosts + effectiveFixedCosts;
+        totalEnergyCost += (log.custoEnergia || 0);
+        totalCarRental += (log.diariaCarro || 0);
+        
+        totalCarExpenses += dayCarExpenses;
+        totalFoodExpenses += dayFoodExpenses;
 
-    // Total daily operational net (exact sum of all table row nets)
-    const totalDailyNet = totalGrossEarnings - totalVariableCosts - totalCarRental;
-    const netOperational = totalGrossEarnings - totalVariableCosts;
-    const realNetEarnings = totalGrossEarnings - totalCosts;
+        totalKM += (log.kmRodado || 0);
+      });
 
-    const profitMargin = totalGrossEarnings > 0 ? (netOperational / totalGrossEarnings) * 100 : 0;
-    const realProfitMargin = totalGrossEarnings > 0 ? (realNetEarnings / totalGrossEarnings) * 100 : 0;
+      const totalVariableCosts = totalEnergyCost + totalCarExpenses + totalFoodExpenses;
 
-    // Efficiency metrics
-    const earningsPerKM = totalKM > 0 ? (totalGrossEarnings - totalAnjo) / totalKM : 0;
-    const energyCostPerKM = totalKM > 0 ? totalEnergyCost / totalKM : 0;
-    const netEarningsPerKM = totalKM > 0 ? realNetEarnings / totalKM : 0;
-    const dailyFoodAverage = elapsedWorkingDays > 0 ? totalFoodExpenses / elapsedWorkingDays : (totalWorkingDays > 0 ? totalFoodExpenses / totalWorkingDays : 0);
+      const totalFixedExpenses = fixedExpenses.reduce((sum, item) => sum + item.value, 0);
 
-    return {
-      totalGrossEarnings,
-      totalEnergyCost,
-      totalCarRental,
-      totalCarExpenses,
-      totalFoodExpenses,
-      totalKM: Math.round(totalKM * 100) / 100,
-      totalRides,
-      uberTotal,
-      uberRides,
-      app99Total,
-      app99Rides,
-      particularTotal,
-      particularRides,
-      totalRecompensas,
-      totalAnjo,
-      totalOperationalEarnings,
-      totalWorkingDays,
-      totalOffDays,
-      elapsedWorkingDays,
-      dailyFoodAverage,
-      totalVariableCosts,
-      totalFixedExpenses,
-      effectiveFixedCosts,
-      totalCosts,
-      totalDailyNet,
-      netOperational,
-      realNetEarnings,
-      profitMargin,
-      realProfitMargin,
-      earningsPerKM,
-      energyCostPerKM,
-      netEarningsPerKM
-    };
-  }, [filteredLogs, isAllYear, fixedExpensesByMonth, fixedExpenses]);
+      const effectiveFixedCosts = totalFixedExpenses > 0 ? totalFixedExpenses : totalCarRental;
+      const totalCosts = totalVariableCosts + effectiveFixedCosts;
+
+      const totalDailyNet = totalGrossEarnings - totalVariableCosts - totalCarRental;
+      const netOperational = totalGrossEarnings - totalVariableCosts;
+      const realNetEarnings = totalGrossEarnings - totalCosts;
+
+      const profitMargin = totalGrossEarnings > 0 ? (netOperational / totalGrossEarnings) * 100 : 0;
+      const realProfitMargin = totalGrossEarnings > 0 ? (realNetEarnings / totalGrossEarnings) * 100 : 0;
+
+      const earningsPerKM = totalKM > 0 ? totalGrossEarnings / totalKM : 0;
+      const energyCostPerKM = totalKM > 0 ? totalEnergyCost / totalKM : 0;
+      const netEarningsPerKM = totalKM > 0 ? realNetEarnings / totalKM : 0;
+      const dailyFoodAverage = elapsedWorkingDays > 0 ? totalFoodExpenses / elapsedWorkingDays : (totalWorkingDays > 0 ? totalFoodExpenses / totalWorkingDays : 0);
+
+      return {
+        totalGrossEarnings,
+        totalEnergyCost,
+        totalCarRental,
+        totalCarExpenses,
+        totalFoodExpenses,
+        totalKM: Math.round(totalKM * 100) / 100,
+        totalRides,
+        uberTotal,
+        uberRides,
+        app99Total,
+        app99Rides,
+        particularTotal,
+        particularRides,
+        totalRecompensas,
+        totalAnjo,
+        totalOperationalEarnings,
+        totalWorkingDays,
+        totalOffDays,
+        elapsedWorkingDays,
+        dailyFoodAverage,
+        totalVariableCosts,
+        totalFixedExpenses,
+        effectiveFixedCosts,
+        totalCosts,
+        totalDailyNet,
+        netOperational,
+        realNetEarnings,
+        profitMargin,
+        realProfitMargin,
+        earningsPerKM,
+        energyCostPerKM,
+        netEarningsPerKM
+      };
+    }
+  }, [filteredLogs, isAllYear, selectedYear, fixedExpensesByMonth, fixedExpenses, logs]);
 
   const {
     totalGrossEarnings,
@@ -3808,7 +4016,7 @@ export default function App() {
   }, [calendarDays, isAllYear, selectedYear, selectedMonth, daysInSelectedMonth]);
 
   return (
-    <div className="min-h-screen bg-[#070709] text-zinc-100 selection:bg-emerald-500/20 selection:text-emerald-300 font-sans antialiased overscroll-y-none">
+    <div className="min-h-screen bg-[#070709] text-zinc-100 selection:bg-emerald-500/20 selection:text-emerald-300 font-sans antialiased overscroll-auto">
       
       {/* Dynamic Header */}
       <header id="main-app-header" className="border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-md relative z-20 px-3 sm:px-6 py-3 transition-all overflow-x-hidden">
@@ -4437,6 +4645,7 @@ export default function App() {
                   <div className="space-y-3 pt-2">
                     {/* Consolidated Annual Summary Bar */}
                     {(() => {
+                      let yearOpGross = 0;
                       let yearGross = 0;
                       let yearAnjo = 0;
                       let yearTotalCosts = 0;
@@ -4451,6 +4660,7 @@ export default function App() {
                         if (mLogs.length === 0) continue;
                         activeMonthsCount++;
 
+                        let mOpGross = 0;
                         let mGross = 0;
                         let mCosts = 0;
                         let mAnjo = 0;
@@ -4460,8 +4670,10 @@ export default function App() {
                             const nTotal = l.app99.earnings + l.app99.bonus;
                             const pTotal = l.appParticular.earnings;
                             const dayAnjo = l.anjo !== undefined ? l.anjo : (l.outrasFontes || 0);
+                            const dayOp = uTotal + nTotal + pTotal + (l.recompensasExtra || 0);
                             mAnjo += dayAnjo;
-                            mGross += uTotal + nTotal + pTotal + (l.recompensasExtra || 0) + dayAnjo;
+                            mOpGross += dayOp;
+                            mGross += dayOp + dayAnjo;
                           }
                           const dayCarExp = (Object.values(l.carExpenses) as number[]).reduce((a, b) => a + b, 0);
                           const dayFoodExp = (Object.values(l.foodExpenses) as number[]).reduce((a, b) => a + b, 0);
@@ -4475,8 +4687,9 @@ export default function App() {
                         const mLogsDiariaSum = mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0);
                         const mEffectiveFixed = mFixedSum > 0 ? mFixedSum : mLogsDiariaSum;
                         const mTotalCosts = (mCosts - mLogsDiariaSum) + mEffectiveFixed;
-                        const mNet = mGross - mTotalCosts;
+                        const mNet = mOpGross - mTotalCosts;
 
+                        yearOpGross += mOpGross;
                         yearGross += mGross;
                         yearAnjo += mAnjo;
                         yearTotalCosts += mTotalCosts;
@@ -4492,33 +4705,36 @@ export default function App() {
                               <span>📊</span> Acumulado de {selectedYear} ({activeMonthsCount} {activeMonthsCount === 1 ? 'mês' : 'meses ativos'})
                             </span>
                             <span className="text-[11px] font-mono text-zinc-400">
-                              Consolidado Geral
+                              Entradas Apps: <strong className="text-blue-400">{formatBRL(yearOpGross)}</strong>
                             </span>
                           </div>
-                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 font-mono text-center">
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 font-mono text-center">
                             <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-850">
-                              <span className="text-[10px] text-zinc-400 block font-sans font-medium">Faturamento</span>
-                              <span className="text-xs sm:text-sm font-black text-blue-400">{formatBRL(yearGross)}</span>
+                              <span className="text-[10px] text-zinc-400 block font-sans font-medium">Faturamento Apps</span>
+                              <span className="text-xs sm:text-sm font-black text-blue-400">{formatBRL(yearOpGross)}</span>
+                              <span className="text-[9px] text-zinc-500 block font-sans">Corridas + Bônus</span>
                             </div>
-                            {yearAnjo > 0 && (
-                              <div className="bg-amber-950/20 p-2.5 rounded-lg border border-amber-500/30">
-                                <span className="text-[10px] text-amber-400 block font-sans font-medium flex items-center justify-center gap-1">
-                                  <span>👼</span> Anjo Recebido
-                                </span>
-                                <span className="text-xs sm:text-sm font-black text-amber-300">{formatBRL(yearAnjo)}</span>
-                              </div>
-                            )}
                             <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-850">
                               <span className="text-[10px] text-zinc-400 block font-sans font-medium">Custos Operacionais</span>
                               <span className="text-xs sm:text-sm font-black text-amber-400">{formatBRL(yearTotalCosts)}</span>
+                              <span className="text-[9px] text-zinc-500 block font-sans">Variáveis + Fixos</span>
                             </div>
                             <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-emerald-500/40 col-span-2 sm:col-span-1">
                               <span className="text-[10px] text-emerald-400 block font-sans font-bold">Lucro Líquido Acumulado</span>
                               <span className={`text-xs sm:text-sm font-black ${yearNet >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                                 {formatBRL(yearNet)}
                               </span>
+                              <span className="text-[9px] text-emerald-500/80 block font-sans">Apps - Custos</span>
                             </div>
                           </div>
+                          {yearAnjo > 0 && (
+                            <div className="mt-2.5 pt-2 border-t border-amber-500/30 bg-amber-950/20 p-2.5 rounded-lg flex items-center justify-between text-xs font-mono">
+                              <span className="text-amber-400 font-bold flex items-center gap-1 font-sans">
+                                <span>👼</span> Anjo Recebido:
+                              </span>
+                              <span className="font-black text-amber-300">{formatBRL(yearAnjo)}</span>
+                            </div>
+                          )}
                         </div>
                       );
                     })()}
@@ -4532,6 +4748,7 @@ export default function App() {
                         });
                         if (mLogs.length === 0) return null;
 
+                        let mOpGross = 0;
                         let mGross = 0;
                         let mCosts = 0;
                         let mRides = 0;
@@ -4542,8 +4759,10 @@ export default function App() {
                             const nTotal = l.app99.earnings + l.app99.bonus;
                             const pTotal = l.appParticular.earnings;
                             const dayAnjo = l.anjo !== undefined ? l.anjo : (l.outrasFontes || 0);
+                            const dayOp = uTotal + nTotal + pTotal + (l.recompensasExtra || 0);
                             mAnjo += dayAnjo;
-                            mGross += uTotal + nTotal + pTotal + (l.recompensasExtra || 0) + dayAnjo;
+                            mOpGross += dayOp;
+                            mGross += dayOp + dayAnjo;
                             mRides += l.appUber.rides + l.app99.rides + l.appParticular.rides;
                           }
                           const dayCarExp = (Object.values(l.carExpenses) as number[]).reduce((a, b) => a + b, 0);
@@ -4559,7 +4778,7 @@ export default function App() {
                         const mLogsDiariaSum = mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0);
                         const mEffectiveFixed = mFixedSum > 0 ? mFixedSum : mLogsDiariaSum;
                         const mTotalCosts = (mCosts - mLogsDiariaSum) + mEffectiveFixed;
-                        const mNet = mGross - mTotalCosts;
+                        const mNet = mOpGross - mTotalCosts; // Lucro líquido = Faturamento Apps - Custos (Anjo não soma ao lucro)
 
                         return (
                           <div 
@@ -4576,25 +4795,25 @@ export default function App() {
                             </div>
                             <div className="space-y-0.5 font-mono text-[11px]">
                               <div className="flex justify-between text-zinc-300">
-                                <span className="text-zinc-500 text-[10px] font-sans">Faturamento:</span>
-                                <span className="font-bold text-blue-400">{formatBRL(mGross)}</span>
+                                <span className="text-zinc-500 text-[10px] font-sans">Faturamento Apps:</span>
+                                <span className="font-bold text-blue-400">{formatBRL(mOpGross)}</span>
                               </div>
-                              {mAnjo > 0 && (
-                                <div className="flex justify-between text-amber-300">
-                                  <span className="text-amber-500 text-[10px] font-sans flex items-center gap-0.5">
-                                    <span>👼</span> Anjo:
-                                  </span>
-                                  <span className="font-bold text-amber-400">{formatBRL(mAnjo)}</span>
-                                </div>
-                              )}
                               <div className="flex justify-between text-zinc-300">
                                 <span className="text-zinc-500 text-[10px] font-sans">Custos Ops:</span>
                                 <span className="text-amber-400">{formatBRL(mTotalCosts)}</span>
                               </div>
                               <div className="flex justify-between border-t border-zinc-850 pt-1 text-[11px] font-bold">
-                                <span className="text-zinc-400 text-[10px] font-sans">Lucro:</span>
+                                <span className="text-zinc-400 text-[10px] font-sans">Lucro Líquido:</span>
                                 <span className={mNet >= 0 ? 'text-emerald-400' : 'text-red-400'}>{formatBRL(mNet)}</span>
                               </div>
+                              {mAnjo > 0 && (
+                                <div className="flex justify-between text-amber-300 pt-1 border-t border-zinc-850/60 text-[10px]">
+                                  <span className="text-amber-400 font-sans flex items-center gap-0.5 font-bold">
+                                    <span>👼</span> Anjo:
+                                  </span>
+                                  <span className="font-bold text-amber-300">{formatBRL(mAnjo)}</span>
+                                </div>
+                              )}
                             </div>
                           </div>
                         );
@@ -5646,6 +5865,16 @@ export default function App() {
                         {formatBRL(realNetEarnings)}
                       </span>
                     </div>
+                    {totalAnjo > 0 && (
+                      <div className="flex justify-between items-center pt-1.5 border-t border-amber-500/30 bg-amber-950/20 px-2 py-1 rounded text-amber-300">
+                        <span className="text-[10px] text-amber-400 font-bold uppercase shrink-0 flex items-center gap-1 font-sans">
+                          <span>👼</span> Anjo (Aporte):
+                        </span>
+                        <span className="text-xs sm:text-sm font-black font-mono text-amber-300 truncate">
+                          {formatBRL(totalAnjo)}
+                        </span>
+                      </div>
+                    )}
                     <div className="flex justify-between items-center mt-2 pt-2 border-t border-zinc-850/60 text-[11px] text-zinc-400 gap-2">
                       <span className="truncate">Diárias Carro: {formatBRL(totalCarRental)}</span>
                       <span className="truncate">Fixo Mês: {formatBRL(totalFixedExpenses)}</span>
@@ -8962,6 +9191,85 @@ export default function App() {
                       className="w-full bg-zinc-900 border border-zinc-800 focus:border-blue-500 rounded-xl px-3.5 py-2 text-xs text-zinc-100 outline-none transition-colors"
                     />
                   </div>
+                </div>
+
+                {/* Insurance Policy File Attachment & WhatsApp Send */}
+                <div className="pt-1">
+                  <label className="block text-xs font-medium text-zinc-300 mb-1.5 flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Apólice de Seguro (PDF ou Imagem)</span>
+                  </label>
+
+                  {carProfile.insurancePolicyPdfUrl ? (
+                    <div className="p-3 bg-zinc-900 border border-zinc-800 rounded-xl flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5 truncate">
+                        <div className="p-2 bg-emerald-500/15 text-emerald-400 rounded-lg shrink-0">
+                          <FileText className="w-4 h-4" />
+                        </div>
+                        <div className="truncate">
+                          <span className="text-xs font-bold text-zinc-100 block truncate">{carProfile.insurancePolicyPdfName || 'Apolice_Seguro.pdf'}</span>
+                          <span className="text-[10px] text-emerald-400 font-medium">Anexado e armazenado com segurança</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={handleViewPolicy}
+                          className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-xs flex items-center gap-1 transition-colors cursor-pointer"
+                          title="Visualizar Apólice"
+                        >
+                          <Eye className="w-3.5 h-3.5 text-blue-400" />
+                          <span className="hidden sm:inline">Ver</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleDownloadPolicy}
+                          className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-xs flex items-center gap-1 transition-colors cursor-pointer"
+                          title="Baixar Apólice"
+                        >
+                          <Download className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="hidden sm:inline">Baixar</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleSharePolicyWhatsApp}
+                          className="p-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs flex items-center gap-1 transition-colors cursor-pointer shadow-md shadow-emerald-600/20"
+                          title="Enviar pelo WhatsApp ou Compartilhar"
+                        >
+                          <Share2 className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">WhatsApp</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleRemovePolicy}
+                          className="p-2 bg-zinc-800 hover:bg-rose-500/20 text-zinc-400 hover:text-rose-400 rounded-lg text-xs transition-colors cursor-pointer"
+                          title="Remover Apólice"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <label className="border-2 border-dashed border-zinc-800 hover:border-blue-500/50 bg-zinc-900/50 hover:bg-zinc-900 rounded-xl p-3.5 flex items-center justify-center gap-2.5 cursor-pointer transition-all group">
+                      <div className="p-2 bg-blue-500/10 text-blue-400 rounded-lg group-hover:scale-110 transition-transform">
+                        <Upload className="w-4 h-4" />
+                      </div>
+                      <div className="text-left">
+                        <span className="text-xs font-bold text-zinc-200 group-hover:text-blue-300 block">Clique para fazer upload da Apólice (PDF ou Imagem)</span>
+                        <span className="text-[10px] text-zinc-500 block">Visualize, baixe ou envie pelo WhatsApp a qualquer momento</span>
+                      </div>
+                      <input
+                        type="file"
+                        accept=".pdf,image/*"
+                        onChange={handleInsurancePolicyUpload}
+                        className="hidden"
+                      />
+                    </label>
+                  )}
                 </div>
               </div>
 

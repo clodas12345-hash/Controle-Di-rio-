@@ -17,6 +17,8 @@ export const DEFAULT_CAR_PROFILE: CarProfile = {
   customWorkDays: {},
   insurerName: '',
   insurancePolicyNumber: '',
+  insurancePolicyPdfUrl: '',
+  insurancePolicyPdfName: '',
   nextMaintenanceKm: '',
   notes: ''
 };

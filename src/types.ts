@@ -77,6 +77,8 @@ export interface CarProfile {
   customWorkDays?: { [monthKey: string]: number[] };
   insurerName?: string;
   insurancePolicyNumber?: string;
+  insurancePolicyPdfUrl?: string;
+  insurancePolicyPdfName?: string;
   nextMaintenanceKm?: string;
   notes?: string;
 }
