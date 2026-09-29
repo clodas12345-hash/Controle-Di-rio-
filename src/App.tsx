@@ -12,6 +12,7 @@ import { requestNotificationPermission, sendAppNotification } from './services/n
 import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
+import { FilePicker } from '@capawesome/capacitor-file-picker';
 import JSZip from 'jszip';
 import { 
   Car, 
@@ -1454,7 +1455,53 @@ export default function App() {
 
   // Opens the system native folder picker to let the user save the backup
   const handleInternalExport = async (scopeOverride?: 'all' | 'year' | 'month' | 'week') => {
-    await handleInternalExportWithTarget('system_picker', scopeOverride);
+    setIsExportingBackup(true);
+    try {
+      const scope = scopeOverride || exportScope;
+      const now = new Date();
+      const dateStr = `${String(now.getDate()).padStart(2, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}-${now.getFullYear()}`;
+      const jsonFileName = `Backup_Controle_Diario_${dateStr}.json`;
+
+      let filteredLogs = scope === 'all' ? logs : logs.filter(l => scope === 'year' ? l.date.startsWith(`${selectedYear}-`) : scope === 'month' ? l.date.startsWith(`${selectedYear}-${String(selectedMonth).padStart(2, '0')}`) : false);
+      let filteredFixedExpenses = fixedExpensesByMonth;
+
+      const allLocalStorageData: Record<string, string> = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key) allLocalStorageData[key] = localStorage.getItem(key) || '';
+      }
+
+      const backupData = JSON.stringify({
+        versaoBackup: '2.0',
+        appName: 'GKD Controle Diário',
+        exportScope: scope,
+        exportDate: now.toISOString(),
+        dailyLogs: filteredLogs,
+        fixedExpensesByMonth: filteredFixedExpenses,
+        carProfile,
+        localStorageSnapshot: allLocalStorageData
+      }, null, 2);
+
+      // Selecionar pasta (Android nativo)
+      const result = await FilePicker.pickDirectory();
+      const directoryPath = result.directory.path;
+
+      if (directoryPath) {
+        await Filesystem.writeFile({
+          path: `${directoryPath}/${jsonFileName}`,
+          data: backupData,
+          encoding: Encoding.UTF8
+        });
+        setInternalBackupMessage(`Sucesso! Salvo em:\n${jsonFileName}`);
+        setTimeout(() => setInternalBackupMessage(null), 6000);
+      }
+    } catch (e) {
+      console.error('Falha no backup:', e);
+      setInternalBackupMessage('Falha ao salvar o backup.');
+      setTimeout(() => setInternalBackupMessage(null), 6000);
+    } finally {
+      setIsExportingBackup(false);
+    }
   };
 
   const handleInternalExportWithTarget = async (
