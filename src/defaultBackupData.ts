@@ -20,6 +20,7 @@ export const DEFAULT_CAR_PROFILE: CarProfile = {
   insurancePolicyPdfUrl: '',
   insurancePolicyPdfName: '',
   nextMaintenanceKm: '',
+  maintenanceIntervalKm: 10000,
   notes: ''
 };
 

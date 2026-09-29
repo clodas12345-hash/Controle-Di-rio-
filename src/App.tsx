@@ -1452,12 +1452,9 @@ export default function App() {
   const [isExportFolderModalOpen, setIsExportFolderModalOpen] = useState(false);
   const [isExportingBackup, setIsExportingBackup] = useState(false);
 
-  // Opens the pop-up modal to let the user select where / which folder to save the backup
-  const handleInternalExport = (scopeOverride?: 'all' | 'year' | 'month' | 'week') => {
-    if (scopeOverride) {
-      setExportScope(scopeOverride);
-    }
-    setIsExportFolderModalOpen(true);
+  // Opens the system native folder picker to let the user save the backup
+  const handleInternalExport = async (scopeOverride?: 'all' | 'year' | 'month' | 'week') => {
+    await handleInternalExportWithTarget('system_picker', scopeOverride);
   };
 
   const handleInternalExportWithTarget = async (
@@ -1937,33 +1934,40 @@ export default function App() {
   }, [carProfile]);
 
   useEffect(() => {
-    if (!carProfile.nextMaintenanceKm || !logs || logs.length === 0) return;
-
-    const targetKmStr = String(carProfile.nextMaintenanceKm).replace(/\D/g, '');
-    if (!targetKmStr) return;
-    
-    const targetKm = parseInt(targetKmStr, 10);
-    if (isNaN(targetKm) || targetKm <= 0) return;
+    if (!logs || logs.length === 0) return;
 
     const currentKm = logs.reduce((max, log) => Math.max(max, log.kmRodado || 0), 0);
     if (currentKm === 0) return;
 
+    let targetKm = 0;
+    if (carProfile.nextMaintenanceKm) {
+        const targetKmStr = String(carProfile.nextMaintenanceKm).replace(/\D/g, '');
+        if (targetKmStr) targetKm = parseInt(targetKmStr, 10);
+    }
+    
+    // Fallback/Logic if nextMaintenanceKm is missing but interval is present:
+    // This assumes nextMaintenance is (last maintenance km + interval) or similar, 
+    // but without last maintenance, just alert based on current interval is tricky.
+    // For now, only alert if targetKm is actually set.
+    if (isNaN(targetKm) || targetKm <= 0) return;
+
     const kmRemaining = targetKm - currentKm;
     
-    if (kmRemaining <= 2000 && kmRemaining >= -5000) { // show even if overdue up to 5k
+    // Use interval to determine alert threshold if set
+    const threshold = carProfile.maintenanceIntervalKm ? Math.min(2000, carProfile.maintenanceIntervalKm * 0.2) : 2000;
+    
+    if (kmRemaining <= threshold && kmRemaining >= -5000) { 
       let type: '2k' | '1k' = '2k';
-      if (kmRemaining <= 1000) type = '1k';
+      if (kmRemaining <= (carProfile.maintenanceIntervalKm ? carProfile.maintenanceIntervalKm * 0.1 : 1000)) type = '1k';
       
       const todayStr = new Date().toISOString().split('T')[0];
       const lastAlertDate = localStorage.getItem('gkd_maintenance_alert_date');
       
-      // Also track which type we showed today, so if they pass a threshold in the same day it can trigger again?
-      // Simple approach: just check the date. Only one alert per day.
       if (lastAlertDate !== todayStr) {
         setMaintenanceAlert({ show: true, type, remaining: kmRemaining, currentKm, targetKm });
       }
     }
-  }, [carProfile.nextMaintenanceKm, logs]);
+  }, [carProfile.nextMaintenanceKm, carProfile.maintenanceIntervalKm, logs]);
 
   useEffect(() => {
     if ((window as any).isClearingAll) return;
@@ -9168,6 +9172,19 @@ export default function App() {
 
                   <div>
                     <label className="block text-xs font-medium text-zinc-300 mb-1">
+                      Intervalo (KM)
+                    </label>
+                    <input
+                      type="number"
+                      value={carProfile.maintenanceIntervalKm || ''}
+                      onChange={(e) => setCarProfile(prev => ({ ...prev, maintenanceIntervalKm: parseInt(e.target.value) || 0 }))}
+                      placeholder="Ex: 10000"
+                      className="w-full bg-zinc-900 border border-zinc-800 focus:border-blue-500 rounded-xl px-3.5 py-2 text-xs text-zinc-100 outline-none transition-colors"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-300 mb-1">
                       Seguradora
                     </label>
                     <input
@@ -10054,55 +10071,7 @@ export default function App() {
 
             {/* Folder Destination Options */}
             <div className="space-y-2.5 pt-1">
-              {/* Opção 1: Pasta Documentos */}
-              <button
-                type="button"
-                onClick={() => handleInternalExportWithTarget('documents')}
-                disabled={isExportingBackup}
-                className="w-full p-3.5 bg-zinc-900 hover:bg-zinc-800/90 border border-zinc-800 hover:border-emerald-500/50 rounded-xl flex items-center justify-between text-left transition-all cursor-pointer group hover:scale-[1.01]"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 rounded-lg group-hover:scale-110 transition-transform">
-                    <Folder className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-zinc-100 group-hover:text-emerald-300">Pasta Documentos</span>
-                      <span className="px-1.5 py-0.5 text-[9px] font-bold bg-emerald-500/20 text-emerald-300 rounded border border-emerald-500/30">Recomendado</span>
-                    </div>
-                    <span className="text-[11px] text-zinc-400 block mt-0.5">
-                      Salva direto na pasta pública de Documentos do celular
-                    </span>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-emerald-400 transition-colors shrink-0" />
-              </button>
-
-              {/* Opção 2: Pasta Downloads */}
-              <button
-                type="button"
-                onClick={() => handleInternalExportWithTarget('downloads')}
-                disabled={isExportingBackup}
-                className="w-full p-3.5 bg-zinc-900 hover:bg-zinc-800/90 border border-zinc-800 hover:border-cyan-500/50 rounded-xl flex items-center justify-between text-left transition-all cursor-pointer group hover:scale-[1.01]"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 rounded-lg group-hover:scale-110 transition-transform">
-                    <Download className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-zinc-100 group-hover:text-cyan-300">Pasta Downloads</span>
-                      <span className="px-1.5 py-0.5 text-[9px] font-bold bg-cyan-500/20 text-cyan-300 rounded border border-cyan-500/30">Padrão</span>
-                    </div>
-                    <span className="text-[11px] text-zinc-400 block mt-0.5">
-                      Baixa diretamente para a pasta de Downloads do dispositivo
-                    </span>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-cyan-400 transition-colors shrink-0" />
-              </button>
-
-              {/* Opção 3: Seletor Nativo do Sistema ("Salvar em...") */}
+              {/* Opção: Seletor Nativo do Sistema ("Salvar em...") */}
               <button
                 type="button"
                 onClick={() => handleInternalExportWithTarget('system_picker')}

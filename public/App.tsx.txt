@@ -1937,33 +1937,40 @@ export default function App() {
   }, [carProfile]);
 
   useEffect(() => {
-    if (!carProfile.nextMaintenanceKm || !logs || logs.length === 0) return;
-
-    const targetKmStr = String(carProfile.nextMaintenanceKm).replace(/\D/g, '');
-    if (!targetKmStr) return;
-    
-    const targetKm = parseInt(targetKmStr, 10);
-    if (isNaN(targetKm) || targetKm <= 0) return;
+    if (!logs || logs.length === 0) return;
 
     const currentKm = logs.reduce((max, log) => Math.max(max, log.kmRodado || 0), 0);
     if (currentKm === 0) return;
 
+    let targetKm = 0;
+    if (carProfile.nextMaintenanceKm) {
+        const targetKmStr = String(carProfile.nextMaintenanceKm).replace(/\D/g, '');
+        if (targetKmStr) targetKm = parseInt(targetKmStr, 10);
+    }
+    
+    // Fallback/Logic if nextMaintenanceKm is missing but interval is present:
+    // This assumes nextMaintenance is (last maintenance km + interval) or similar, 
+    // but without last maintenance, just alert based on current interval is tricky.
+    // For now, only alert if targetKm is actually set.
+    if (isNaN(targetKm) || targetKm <= 0) return;
+
     const kmRemaining = targetKm - currentKm;
     
-    if (kmRemaining <= 2000 && kmRemaining >= -5000) { // show even if overdue up to 5k
+    // Use interval to determine alert threshold if set
+    const threshold = carProfile.maintenanceIntervalKm ? Math.min(2000, carProfile.maintenanceIntervalKm * 0.2) : 2000;
+    
+    if (kmRemaining <= threshold && kmRemaining >= -5000) { 
       let type: '2k' | '1k' = '2k';
-      if (kmRemaining <= 1000) type = '1k';
+      if (kmRemaining <= (carProfile.maintenanceIntervalKm ? carProfile.maintenanceIntervalKm * 0.1 : 1000)) type = '1k';
       
       const todayStr = new Date().toISOString().split('T')[0];
       const lastAlertDate = localStorage.getItem('gkd_maintenance_alert_date');
       
-      // Also track which type we showed today, so if they pass a threshold in the same day it can trigger again?
-      // Simple approach: just check the date. Only one alert per day.
       if (lastAlertDate !== todayStr) {
         setMaintenanceAlert({ show: true, type, remaining: kmRemaining, currentKm, targetKm });
       }
     }
-  }, [carProfile.nextMaintenanceKm, logs]);
+  }, [carProfile.nextMaintenanceKm, carProfile.maintenanceIntervalKm, logs]);
 
   useEffect(() => {
     if ((window as any).isClearingAll) return;
@@ -9162,6 +9169,19 @@ export default function App() {
                       value={carProfile.nextMaintenanceKm}
                       onChange={(e) => setCarProfile(prev => ({ ...prev, nextMaintenanceKm: e.target.value }))}
                       placeholder="Ex: 10.000 KM"
+                      className="w-full bg-zinc-900 border border-zinc-800 focus:border-blue-500 rounded-xl px-3.5 py-2 text-xs text-zinc-100 outline-none transition-colors"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-300 mb-1">
+                      Intervalo (KM)
+                    </label>
+                    <input
+                      type="number"
+                      value={carProfile.maintenanceIntervalKm || ''}
+                      onChange={(e) => setCarProfile(prev => ({ ...prev, maintenanceIntervalKm: parseInt(e.target.value) || 0 }))}
+                      placeholder="Ex: 10000"
                       className="w-full bg-zinc-900 border border-zinc-800 focus:border-blue-500 rounded-xl px-3.5 py-2 text-xs text-zinc-100 outline-none transition-colors"
                     />
                   </div>

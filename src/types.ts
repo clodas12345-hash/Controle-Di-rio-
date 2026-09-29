@@ -80,5 +80,6 @@ export interface CarProfile {
   insurancePolicyPdfUrl?: string;
   insurancePolicyPdfName?: string;
   nextMaintenanceKm?: string;
+  maintenanceIntervalKm?: number;
   notes?: string;
 }

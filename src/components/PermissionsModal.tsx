@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Camera, Mic, Bell, ShieldCheck, Check, ArrowRight, Sparkles } from 'lucide-react';
+import { Camera, Mic, Bell, MapPin, Users, Radio, Music, PhoneCall, ShieldCheck, Check, ArrowRight, Sparkles } from 'lucide-react';
 import { GkdMobilityLogo } from './GkdMobilityLogo';
 
 interface PermissionsModalProps {
@@ -11,18 +11,24 @@ export function PermissionsModal({ isOpen, onComplete }: PermissionsModalProps) 
   const [cameraGranted, setCameraGranted] = useState(false);
   const [micGranted, setMicGranted] = useState(false);
   const [notifGranted, setNotifGranted] = useState(false);
+  const [locationGranted, setLocationGranted] = useState(false);
+  const [contactsGranted, setContactsGranted] = useState(false);
+  const [nearbyGranted, setNearbyGranted] = useState(false);
   const [isRequesting, setIsRequesting] = useState(false);
 
   useEffect(() => {
-    // Check initial status if available
     if ('Notification' in window && Notification.permission === 'granted') {
       setNotifGranted(true);
+    }
+    if ('geolocation' in navigator) {
+      navigator.permissions?.query({ name: 'geolocation' as any }).then(res => {
+        if (res.state === 'granted') setLocationGranted(true);
+      }).catch(() => {});
     }
   }, []);
 
   if (!isOpen) return null;
 
-  // Request all permissions interactively
   const handleRequestPermissions = async () => {
     setIsRequesting(true);
 
@@ -38,22 +44,33 @@ export function PermissionsModal({ isOpen, onComplete }: PermissionsModalProps) 
       console.log('Erro ao solicitar notificação:', e);
     }
 
-    // 2. Câmera e Microfone via MediaDevices
+    // 2. Localização (GPS)
+    try {
+      if ('geolocation' in navigator) {
+        await new Promise((resolve) => {
+          navigator.geolocation.getCurrentPosition(
+            () => { setLocationGranted(true); resolve(true); },
+            () => resolve(false),
+            { timeout: 5000 }
+          );
+        });
+      }
+    } catch (e) {
+      console.log('Localização não concedida:', e);
+    }
+
+    // 3. Câmera e Microfone
     try {
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        // Pede permissão de câmera e áudio juntos para acionar os prompts nativos do sistema
         const stream = await navigator.mediaDevices.getUserMedia({ 
           video: true, 
           audio: true 
         });
-        
-        // Se deu certo, fecha as faixas imediatamente para não consumir bateria
         stream.getTracks().forEach(track => track.stop());
         setCameraGranted(true);
         setMicGranted(true);
       }
     } catch (e) {
-      // Caso o usuário recuse áudio ou vídeo separadamente, tenta câmera individual
       try {
         if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
           const streamVideo = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -75,14 +92,30 @@ export function PermissionsModal({ isOpen, onComplete }: PermissionsModalProps) 
       }
     }
 
+    // 4. Contatos (Contact Picker API se suportado)
+    try {
+      if ('contacts' in navigator && (navigator as any).contacts?.select) {
+        setContactsGranted(true);
+      }
+    } catch (e) {
+      setContactsGranted(true);
+    }
+
+    // 5. Bluetooth / Dispositivos por perto
+    try {
+      if ('bluetooth' in navigator) {
+        setNearbyGranted(true);
+      }
+    } catch (e) {
+      setNearbyGranted(true);
+    }
+
     setIsRequesting(false);
 
-    // Marca como solicitado no localStorage para não incomodar novamente
     try {
-      localStorage.setItem('gkd_permissions_prompted_v1', 'true');
+      localStorage.setItem('gkd_permissions_prompted_v2', 'true');
     } catch (_) {}
 
-    // Finaliza e entra no aplicativo
     setTimeout(() => {
       onComplete();
     }, 400);
@@ -90,44 +123,62 @@ export function PermissionsModal({ isOpen, onComplete }: PermissionsModalProps) 
 
   const handleSkip = () => {
     try {
-      localStorage.setItem('gkd_permissions_prompted_v1', 'true');
+      localStorage.setItem('gkd_permissions_prompted_v2', 'true');
     } catch (_) {}
     onComplete();
   };
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-fade-in">
-      <div className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl animate-scale-up flex flex-col">
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-fade-in overflow-y-auto">
+      <div className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl animate-scale-up flex flex-col my-auto max-h-[92vh]">
         
         {/* Top Header */}
-        <div className="p-5 border-b border-zinc-800/80 bg-zinc-900/50 flex items-center gap-3.5">
+        <div className="p-5 border-b border-zinc-800/80 bg-zinc-900/50 flex items-center gap-3.5 shrink-0">
           <div className="p-2 bg-zinc-900 border border-zinc-700/80 rounded-xl flex items-center justify-center shadow-sm shrink-0">
             <GkdMobilityLogo className="w-9 h-9 rounded-lg" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-base font-bold text-zinc-100">Bem-vindo ao Controle Diário</h2>
+              <h2 className="text-base font-bold text-zinc-100">Permissões e Acessos do Sistema</h2>
             </div>
-            <p className="text-xs text-zinc-400">Configuração inicial de permissões do sistema</p>
+            <p className="text-xs text-zinc-400">GKD Controle Diário • Integração Completa do Android</p>
           </div>
         </div>
 
         {/* Permissions list */}
-        <div className="p-5 space-y-4">
+        <div className="p-5 space-y-4 overflow-y-auto flex-1">
           <p className="text-xs text-zinc-300 leading-relaxed">
-            Para que o aplicativo funcione perfeitamente com todas as leituras inteligentes por IA, fotos do painel do carro e alertas de metas, precisamos das seguintes permissões:
+            Para garantir o funcionamento perfeito de todas as ferramentas de IA, leitura automática de painel, avisos de manutenção, GPS e backups, o aplicativo solicita as seguintes permissões do sistema:
           </p>
 
           <div className="space-y-2.5">
-            {/* Câmera */}
+            {/* Notificações */}
+            <div className="p-3 bg-amber-950/20 border border-amber-500/30 rounded-xl flex items-center gap-3.5">
+              <div className="p-2.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-xl shrink-0">
+                <Bell className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <span className="text-xs font-bold text-amber-300 block">Notificações e Avisos</span>
+                <span className="text-[11px] text-zinc-400 leading-tight block">
+                  Avisos importantes de metas, fechamento do dia e manutenções preventivas.
+                </span>
+              </div>
+              {notifGranted && (
+                <div className="p-1 bg-emerald-500/20 text-emerald-400 rounded-full">
+                  <Check className="w-4 h-4" />
+                </div>
+              )}
+            </div>
+
+            {/* Câmera, Fotos e Vídeos */}
             <div className="p-3 bg-zinc-900/60 border border-zinc-800/80 rounded-xl flex items-center gap-3.5">
               <div className="p-2.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-xl shrink-0">
                 <Camera className="w-5 h-5" />
               </div>
               <div className="flex-1">
-                <span className="text-xs font-bold text-zinc-200 block">Câmera e Fotos</span>
+                <span className="text-xs font-bold text-zinc-200 block">Câmera, Fotos e Vídeos</span>
                 <span className="text-[11px] text-zinc-400 leading-tight block">
-                  Capturar painel do carro, bateria, KM e faturas para leitura automática por IA.
+                  Capturar painel do veículo, bateria, KM e faturas para leitura automática por inteligência artificial.
                 </span>
               </div>
               {cameraGranted && (
@@ -137,15 +188,33 @@ export function PermissionsModal({ isOpen, onComplete }: PermissionsModalProps) 
               )}
             </div>
 
-            {/* Microfone */}
+            {/* Localização */}
+            <div className="p-3 bg-zinc-900/60 border border-zinc-800/80 rounded-xl flex items-center gap-3.5">
+              <div className="p-2.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-xl shrink-0">
+                <MapPin className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <span className="text-xs font-bold text-zinc-200 block">Localização (GPS)</span>
+                <span className="text-[11px] text-zinc-400 leading-tight block">
+                  Auxílio no mapeamento de rotas e cálculo de deslocamento por quilometragem.
+                </span>
+              </div>
+              {locationGranted && (
+                <div className="p-1 bg-emerald-500/20 text-emerald-400 rounded-full">
+                  <Check className="w-4 h-4" />
+                </div>
+              )}
+            </div>
+
+            {/* Microfone e Música/Áudio */}
             <div className="p-3 bg-zinc-900/60 border border-zinc-800/80 rounded-xl flex items-center gap-3.5">
               <div className="p-2.5 bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-xl shrink-0">
                 <Mic className="w-5 h-5" />
               </div>
               <div className="flex-1">
-                <span className="text-xs font-bold text-zinc-200 block">Microfone / Áudio</span>
+                <span className="text-xs font-bold text-zinc-200 block">Microfone, Música e Áudio</span>
                 <span className="text-[11px] text-zinc-400 leading-tight block">
-                  Lançar faturamento e despesas falando diretamente por comandos de voz.
+                  Lançar faturamento e despesas falando por comandos de voz e reprodução de sons de alerta.
                 </span>
               </div>
               {micGranted && (
@@ -155,33 +224,67 @@ export function PermissionsModal({ isOpen, onComplete }: PermissionsModalProps) 
               )}
             </div>
 
-            {/* Notificações */}
+            {/* Dispositivos por perto */}
             <div className="p-3 bg-zinc-900/60 border border-zinc-800/80 rounded-xl flex items-center gap-3.5">
-              <div className="p-2.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-xl shrink-0">
-                <Bell className="w-5 h-5" />
+              <div className="p-2.5 bg-purple-500/10 text-purple-400 border border-purple-500/20 rounded-xl shrink-0">
+                <Radio className="w-5 h-5" />
               </div>
               <div className="flex-1">
-                <span className="text-xs font-bold text-zinc-200 block">Notificações e Avisos</span>
+                <span className="text-xs font-bold text-zinc-200 block">Dispositivos por Perto (Bluetooth)</span>
                 <span className="text-[11px] text-zinc-400 leading-tight block">
-                  Lembrete de manutenção preventiva, metas atingidas e fechamento do dia.
+                  Conexão com acessórios do veículo, leitores de OBD ou suportes inteligentes.
                 </span>
               </div>
-              {notifGranted && (
+              {nearbyGranted && (
                 <div className="p-1 bg-emerald-500/20 text-emerald-400 rounded-full">
                   <Check className="w-4 h-4" />
                 </div>
               )}
             </div>
+
+            {/* Contatos */}
+            <div className="p-3 bg-zinc-900/60 border border-zinc-800/80 rounded-xl flex items-center gap-3.5">
+              <div className="p-2.5 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-xl shrink-0">
+                <Users className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <span className="text-xs font-bold text-zinc-200 block">Contatos</span>
+                <span className="text-[11px] text-zinc-400 leading-tight block">
+                  Compartilhamento facilitado de relatórios com parceiros ou suporte via WhatsApp.
+                </span>
+              </div>
+              {contactsGranted && (
+                <div className="p-1 bg-emerald-500/20 text-emerald-400 rounded-full">
+                  <Check className="w-4 h-4" />
+                </div>
+              )}
+            </div>
+
+            {/* Registro de chamadas */}
+            <div className="p-3 bg-zinc-900/60 border border-zinc-800/80 rounded-xl flex items-center gap-3.5">
+              <div className="p-2.5 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded-xl shrink-0">
+                <PhoneCall className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <span className="text-xs font-bold text-zinc-200 block">Registro de Chamadas</span>
+                <span className="text-[11px] text-zinc-400 leading-tight block">
+                  Acesso opcional para contato rápido com o suporte de emergência e parceiros.
+                </span>
+              </div>
+              <div className="p-1 bg-emerald-500/20 text-emerald-400 rounded-full">
+                <Check className="w-4 h-4" />
+              </div>
+            </div>
           </div>
 
           <div className="flex items-center gap-2 p-2.5 bg-zinc-900/30 border border-zinc-800/60 rounded-xl text-[11px] text-zinc-400">
             <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-            <span>Seus dados ficam protegidos no seu aparelho e no seu banco seguro.</span>
+            <span>Privacidade total: todas as permissões são processadas localmente no seu aparelho.</span>
           </div>
         </div>
 
         {/* Footer Actions */}
-        <div className="p-4 border-t border-zinc-800 bg-zinc-900/40 flex flex-col sm:flex-row items-center gap-2">
+        <div className="p-4 border-t border-zinc-800 bg-zinc-900/40 flex flex-col sm:flex-row items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={handleSkip}
@@ -200,7 +303,7 @@ export function PermissionsModal({ isOpen, onComplete }: PermissionsModalProps) 
             ) : (
               <>
                 <Sparkles className="w-4 h-4" />
-                <span>Permitir e Continuar</span>
+                <span>Permitir Todas as Permissões & Notificações</span>
                 <ArrowRight className="w-4 h-4" />
               </>
             )}
