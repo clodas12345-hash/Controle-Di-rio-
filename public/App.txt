@@ -1482,22 +1482,23 @@ export default function App() {
         localStorageSnapshot: allLocalStorageData
       }, null, 2);
 
-      // Selecionar pasta (Android nativo)
-      const result = await FilePicker.pickDirectory();
-      const directoryPath = result.directory.path;
-
-      if (directoryPath) {
-        await Filesystem.writeFile({
-          path: `${directoryPath}/${jsonFileName}`,
-          data: backupData,
-          encoding: Encoding.UTF8
-        });
-        setInternalBackupMessage(`Sucesso! Salvo em:\n${jsonFileName}`);
-        setTimeout(() => setInternalBackupMessage(null), 6000);
-      }
+      // FORÇAR DOWNLOAD PELO NAVEGADOR (Mais confiável no Android)
+      const blob = new Blob([backupData], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = jsonFileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      
+      setInternalBackupMessage(`Backup solicitado:\n${jsonFileName}`);
+      setTimeout(() => setInternalBackupMessage(null), 6000);
+      
     } catch (e) {
       console.error('Falha no backup:', e);
-      setInternalBackupMessage('Falha ao salvar o backup.');
+      setInternalBackupMessage('Falha ao iniciar o download do backup.');
       setTimeout(() => setInternalBackupMessage(null), 6000);
     } finally {
       setIsExportingBackup(false);
