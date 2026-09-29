@@ -1485,13 +1485,22 @@ export default function App() {
       // FORÇAR DOWNLOAD PELO NAVEGADOR (Mais confiável no Android)
       const blob = new Blob([backupData], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
+      
       const link = document.createElement('a');
       link.href = url;
       link.download = jsonFileName;
+      link.style.display = 'none';
       document.body.appendChild(link);
       link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      
+      // Fallback extra caso o click não funcione
+      setTimeout(() => {
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }, 100);
+      
+      // Alternativa agressiva para mobile
+      window.location.href = url;
       
       setInternalBackupMessage(`Backup solicitado:\n${jsonFileName}`);
       setTimeout(() => setInternalBackupMessage(null), 6000);
