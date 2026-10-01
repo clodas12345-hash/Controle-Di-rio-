@@ -774,6 +774,23 @@ export default function App() {
     if (startYear > selectedYear) return false;
     if (startYear === selectedYear && startMonth > selectedMonth) return false;
     return true;
+  }).sort((a, b) => {
+    const aInfo = parseInstallmentInfo(a.installments);
+    const bInfo = parseInstallmentInfo(b.installments);
+    const aIsInst = Boolean(aInfo);
+    const bIsInst = Boolean(bInfo);
+
+    if (aIsInst !== bIsInst) {
+      return aIsInst ? 1 : -1; // Despesas fixas normais em cima, parceladas agrupadas embaixo
+    }
+
+    if (aInfo && bInfo) {
+      const aRem = aInfo.total - aInfo.current;
+      const bRem = bInfo.total - bInfo.current;
+      return aRem - bRem;
+    }
+
+    return a.name.localeCompare(b.name);
   });
 
   const getEffectiveMonthlyCost = (year: number, month: number): number => {

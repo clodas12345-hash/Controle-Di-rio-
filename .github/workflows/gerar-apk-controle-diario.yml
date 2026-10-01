@@ -284,6 +284,9 @@ jobs:
           console.log("✅ Todas as permissões e legacy storage foram injetadas no AndroidManifest.xml!");
           '
 
+      - name: Aplicar Ícones e Ícone de Notificação (ic_stat_icon)
+        run: node scripts/apply-android-icons.mjs
+
       - name: Injetar Ícone Proporcional Alinhado (88% da Área)
         run: |
           node -e '

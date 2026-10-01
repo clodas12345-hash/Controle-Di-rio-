@@ -12,6 +12,11 @@
   "plugins": {
     "CapacitorHttp": {
       "enabled": true
+    },
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_icon",
+      "iconColor": "#34d399",
+      "sound": "default"
     }
   }
 }
