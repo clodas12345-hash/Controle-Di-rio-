@@ -1430,7 +1430,7 @@ export default function App() {
   const [isAppShareModalOpen, setIsAppShareModalOpen] = useState(false);
   const [isPermissionsModalOpen, setIsPermissionsModalOpen] = useState(() => {
     try {
-      return localStorage.getItem('gkd_permissions_prompted_v1') !== 'true';
+      return localStorage.getItem('gkd_permissions_prompted_v2') !== 'true';
     } catch {
       return false;
     }
