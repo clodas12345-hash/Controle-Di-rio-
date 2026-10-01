@@ -9,10 +9,9 @@ import { DeepSweepModal, DeepSweepReport } from './components/DeepSweepModal';
 import { MultimodalAiModal } from './components/MultimodalAiModal';
 import { ConflictResolverModal, ConflictData } from './components/ConflictResolverModal';
 import { requestNotificationPermission, sendAppNotification } from './services/notificationService';
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
-import { FilePicker } from '@capawesome/capacitor-file-picker';
 import JSZip from 'jszip';
 import { 
   Car, 
@@ -681,49 +680,11 @@ function getInitialLogsAndPeriod(): { initialLogs: DailyLog[]; initialYear: numb
     localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(allStoredLogs));
   }
 
-  // Find the most recent active month/year in logs
-  let activeYear = 0;
-  let activeMonth = 0;
-
-  const activeLogsDesc = [...allStoredLogs]
-    .filter(l => 
-      (l.kmRodado || 0) > 0 || 
-      (l.app99?.earnings || 0) > 0 || 
-      (l.appUber?.earnings || 0) > 0 || 
-      (l.appParticular?.earnings || 0) > 0 ||
-      (l.recompensasExtra || 0) > 0 ||
-      (l.outrasFontes || 0) > 0 ||
-      (l.carExpenses?.wash || 0) > 0 ||
-      (l.carExpenses?.toll || 0) > 0 ||
-      (l.carExpenses?.maintenance || 0) > 0 ||
-      (l.carExpenses?.parking || 0) > 0 ||
-      (l.carExpenses?.publicCharging || 0) > 0 ||
-      (l.carExpenses?.other || 0) > 0 ||
-      (l.foodExpenses?.lunch || 0) > 0 ||
-      (l.foodExpenses?.dinner || 0) > 0 ||
-      (l.foodExpenses?.snacks || 0) > 0 ||
-      (l.foodExpenses?.coffee || 0) > 0
-    )
-    .sort((a, b) => b.date.localeCompare(a.date));
-
-  if (activeLogsDesc.length > 0) {
-    const mostRecentActive = activeLogsDesc[0];
-    const parts = mostRecentActive.date.split('-');
-    if (parts.length === 3) {
-      activeYear = parseInt(parts[0], 10);
-      activeMonth = parseInt(parts[1], 10);
-    }
-  }
-
-  if (!activeYear || !activeMonth) {
-    activeYear = currentDeviceYear;
-    activeMonth = currentDeviceMonth;
-  }
-
+  // Regra fundamental: o aplicativo abre SEMPRE no mês vigente (ano e mês atuais do aparelho do usuário)
   initialLogsData = {
     initialLogs: allStoredLogs,
-    initialYear: activeYear,
-    initialMonth: activeMonth
+    initialYear: currentDeviceYear,
+    initialMonth: currentDeviceMonth
   };
 
   return initialLogsData;
@@ -735,8 +696,9 @@ export default function App() {
   const currentYear = today.getFullYear();
   const currentMonth = today.getMonth() + 1;
 
-  const [selectedYear, setSelectedYear] = useState<number>(initialData.initialYear);
-  const [selectedMonth, setSelectedMonth] = useState<number>(initialData.initialMonth);
+  // Inicializa estritamente no ano e mês vigentes atuais
+  const [selectedYear, setSelectedYear] = useState<number>(currentYear);
+  const [selectedMonth, setSelectedMonth] = useState<number>(currentMonth);
   const [isAllYear, setIsAllYear] = useState<boolean>(false);
   const [sweepNotification, setSweepNotification] = useState<string | null>(null);
   const [maintenanceAlert, setMaintenanceAlert] = useState<{ show: boolean, type: '2k' | '1k', remaining: number, currentKm: number, targetKm: number } | null>(null);
@@ -1450,75 +1412,10 @@ export default function App() {
   const internalFileInputRef = useRef<HTMLInputElement>(null);
   const [internalBackupMessage, setInternalBackupMessage] = useState<string | null>(null);
   const [exportScope, setExportScope] = useState<'all' | 'year' | 'month' | 'week'>('all');
-  const [isExportFolderModalOpen, setIsExportFolderModalOpen] = useState(false);
   const [isExportingBackup, setIsExportingBackup] = useState(false);
 
-  // Opens the system native folder picker to let the user save the backup
+  // Executa o backup nativo com seletor de pasta (Storage Access Framework no Android)
   const handleInternalExport = async (scopeOverride?: 'all' | 'year' | 'month' | 'week') => {
-    setIsExportingBackup(true);
-    try {
-      const scope = scopeOverride || exportScope;
-      const now = new Date();
-      const dateStr = `${String(now.getDate()).padStart(2, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}-${now.getFullYear()}`;
-      const jsonFileName = `Backup_Controle_Diario_${dateStr}.json`;
-
-      let filteredLogs = scope === 'all' ? logs : logs.filter(l => scope === 'year' ? l.date.startsWith(`${selectedYear}-`) : scope === 'month' ? l.date.startsWith(`${selectedYear}-${String(selectedMonth).padStart(2, '0')}`) : false);
-      let filteredFixedExpenses = fixedExpensesByMonth;
-
-      const allLocalStorageData: Record<string, string> = {};
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key) allLocalStorageData[key] = localStorage.getItem(key) || '';
-      }
-
-      const backupData = JSON.stringify({
-        versaoBackup: '2.0',
-        appName: 'GKD Controle Diário',
-        exportScope: scope,
-        exportDate: now.toISOString(),
-        dailyLogs: filteredLogs,
-        fixedExpensesByMonth: filteredFixedExpenses,
-        carProfile,
-        localStorageSnapshot: allLocalStorageData
-      }, null, 2);
-
-      // FORÇAR DOWNLOAD PELO NAVEGADOR (Mais confiável no Android)
-      const blob = new Blob([backupData], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = jsonFileName;
-      link.style.display = 'none';
-      document.body.appendChild(link);
-      link.click();
-      
-      // Fallback extra caso o click não funcione
-      setTimeout(() => {
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-      }, 100);
-      
-      // Alternativa agressiva para mobile
-      window.location.href = url;
-      
-      setInternalBackupMessage(`Backup solicitado:\n${jsonFileName}`);
-      setTimeout(() => setInternalBackupMessage(null), 6000);
-      
-    } catch (e) {
-      console.error('Falha no backup:', e);
-      setInternalBackupMessage('Falha ao iniciar o download do backup.');
-      setTimeout(() => setInternalBackupMessage(null), 6000);
-    } finally {
-      setIsExportingBackup(false);
-    }
-  };
-
-  const handleInternalExportWithTarget = async (
-    targetFolder: 'documents' | 'downloads' | 'system_picker',
-    scopeOverride?: 'all' | 'year' | 'month' | 'week'
-  ) => {
-    setIsExportFolderModalOpen(false);
     setIsExportingBackup(true);
     try {
       const scope = scopeOverride || exportScope;
@@ -1590,116 +1487,82 @@ export default function App() {
       const content = JSON.stringify(backupData, null, 2);
       const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
 
-      // CASO 1: SELETOR NATIVO DO SISTEMA ("Salvar em...")
-      if (targetFolder === 'system_picker') {
-        // Se for no app nativo Capacitor (Android)
-        if (isCapacitorNative && typeof Filesystem !== 'undefined') {
-          try {
-            await Filesystem.writeFile({
-              path: jsonFileName,
-              data: content,
-              directory: Directory.Cache,
-              encoding: Encoding.UTF8
-            });
-            const fileUri = await Filesystem.getUri({
-              path: jsonFileName,
-              directory: Directory.Cache
-            });
-            await Share.share({
-              title: 'Backup Controle Diário',
-              text: `Backup do Controle Diário (${jsonFileName})`,
-              url: fileUri.uri,
-              dialogTitle: 'Salvar backup em...'
-            });
-            setInternalBackupMessage(`Seletor do sistema aberto para salvar:\n${jsonFileName}`);
-            setTimeout(() => setInternalBackupMessage(null), 6000);
-            return;
-          } catch (shareErr: any) {
-            console.warn('Share nativo falhou, tentando fallback:', shareErr);
-          }
-        }
-
-        // Se for no navegador com suporte a File System Access API (Chrome/Edge/Android Chrome)
-        if ('showSaveFilePicker' in window) {
-          try {
-            const handle = await (window as any).showSaveFilePicker({
-              suggestedName: jsonFileName,
-              types: [{
-                description: 'Arquivo de Backup JSON',
-                accept: { 'application/json': ['.json'] }
-              }]
-            });
-            const writable = await handle.createWritable();
-            await writable.write(content);
-            await writable.close();
-            setInternalBackupMessage(`Sucesso! Salvo na pasta escolhida:\n${jsonFileName}`);
-            setTimeout(() => setInternalBackupMessage(null), 6000);
-            return;
-          } catch (pickerErr: any) {
-            if (pickerErr.name === 'AbortError') {
-              // Cancelado pelo usuário
-              return;
-            }
-            console.warn('showSaveFilePicker falhou:', pickerErr);
-          }
-        }
-
-        // Fallback Web Share API
-        if (typeof navigator !== 'undefined' && navigator.share && typeof File !== 'undefined') {
-          try {
-            const file = new File([content], jsonFileName, { type: 'application/json' });
-            if (navigator.canShare && navigator.canShare({ files: [file] })) {
-              await navigator.share({
-                title: 'Backup Controle Diário',
-                files: [file]
-              });
-              setInternalBackupMessage(`Arquivo compartilhado com sucesso:\n${jsonFileName}`);
-              setTimeout(() => setInternalBackupMessage(null), 6000);
-              return;
-            }
-          } catch (err: any) {
-            if (err.name === 'AbortError') return;
-          }
-        }
-      }
-
-      // CASO 2: PASTA DOCUMENTOS
-      if (targetFolder === 'documents') {
-        if (isCapacitorNative && typeof Filesystem !== 'undefined') {
-          try {
-            await Filesystem.writeFile({
-              path: jsonFileName,
-              data: content,
-              directory: Directory.Documents,
-              encoding: Encoding.UTF8
-            });
-            setInternalBackupMessage(`Sucesso! Salvo na pasta Documentos:\n${jsonFileName}`);
-            setTimeout(() => setInternalBackupMessage(null), 6000);
-            return;
-          } catch (nativeErr) {
-            console.warn('Filesystem Documentos falhou, fazendo download:', nativeErr);
-          }
-        }
-      }
-
-      // CASO 3: PASTA DOWNLOADS OU DOWNLOAD NAVEGADOR
-      if (isCapacitorNative && typeof Filesystem !== 'undefined') {
+      // 1. APLICATIVO ANDROID (APK): Storage Access Framework (SAF) nativo
+      if (isCapacitorNative) {
         try {
-          await Filesystem.writeFile({
-            path: jsonFileName,
+          const SafStorage = registerPlugin<any>('SafStorage');
+          const result = await SafStorage.saveFileToFolder({
+            fileName: jsonFileName,
             data: content,
-            directory: Directory.Documents,
-            encoding: Encoding.UTF8
+            mimeType: 'application/json'
           });
-          setInternalBackupMessage(`Sucesso! Salvo no seu dispositivo:\n${jsonFileName}`);
+
+          if (result?.success) {
+            setInternalBackupMessage(`Sucesso! Backup salvo na pasta escolhida:\n${jsonFileName}`);
+            setTimeout(() => setInternalBackupMessage(null), 6000);
+            return;
+          }
+        } catch (nativeErr: any) {
+          const msg = (nativeErr?.message || String(nativeErr)).toLowerCase();
+          if (msg.includes('cancelado') || msg.includes('cancel')) {
+            setInternalBackupMessage('Backup cancelado');
+            setTimeout(() => setInternalBackupMessage(null), 4000);
+            return;
+          }
+          console.warn('SafStorage nativo indisponível ou falhou:', nativeErr);
+        }
+      }
+
+      // 2. NAVEGADOR COM SELETOR NATIVO DE PASTA (File System Access API)
+      if (typeof window !== 'undefined' && 'showDirectoryPicker' in window) {
+        try {
+          const dirHandle = await (window as any).showDirectoryPicker({
+            mode: 'readwrite',
+            startIn: 'documents'
+          });
+          const fileHandle = await dirHandle.getFileHandle(jsonFileName, { create: true });
+          const writable = await fileHandle.createWritable();
+          await writable.write(content);
+          await writable.close();
+          setInternalBackupMessage(`Sucesso! Backup salvo na pasta escolhida:\n${jsonFileName}`);
           setTimeout(() => setInternalBackupMessage(null), 6000);
           return;
-        } catch (nativeErr) {
-          console.warn('Filesystem download falhou:', nativeErr);
+        } catch (pickerErr: any) {
+          if (pickerErr?.name === 'AbortError') {
+            setInternalBackupMessage('Backup cancelado');
+            setTimeout(() => setInternalBackupMessage(null), 4000);
+            return;
+          }
+          console.warn('showDirectoryPicker falhou:', pickerErr);
         }
       }
 
-      // Download tradicional do navegador (vai direto para a pasta Downloads padrão)
+      // 3. SELETOR DE ARQUIVO DO SISTEMA (showSaveFilePicker)
+      if (typeof window !== 'undefined' && 'showSaveFilePicker' in window) {
+        try {
+          const handle = await (window as any).showSaveFilePicker({
+            suggestedName: jsonFileName,
+            types: [{
+              description: 'Arquivo de Backup JSON',
+              accept: { 'application/json': ['.json'] }
+            }]
+          });
+          const writable = await handle.createWritable();
+          await writable.write(content);
+          await writable.close();
+          setInternalBackupMessage(`Sucesso! Backup salvo na pasta escolhida:\n${jsonFileName}`);
+          setTimeout(() => setInternalBackupMessage(null), 6000);
+          return;
+        } catch (saveErr: any) {
+          if (saveErr?.name === 'AbortError') {
+            setInternalBackupMessage('Backup cancelado');
+            setTimeout(() => setInternalBackupMessage(null), 4000);
+            return;
+          }
+        }
+      }
+
+      // 4. FALLBACK NAVEGADOR PADRÃO (Download tradicional)
       const blob = new Blob([content], { type: 'application/json;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -1708,15 +1571,16 @@ export default function App() {
       link.style.display = 'none';
       document.body.appendChild(link);
       link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      setTimeout(() => {
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }, 500);
 
-      const targetMsg = targetFolder === 'downloads' ? 'pasta Downloads' : 'seu dispositivo';
-      setInternalBackupMessage(`Sucesso! Arquivo JSON salvo na ${targetMsg}:\n${jsonFileName}`);
+      setInternalBackupMessage(`Download do backup iniciado:\n${jsonFileName}`);
       setTimeout(() => setInternalBackupMessage(null), 6000);
     } catch (e: any) {
-      console.error('Erro ao exportar backup interno:', e);
-      setInternalBackupMessage('Erro ao gerar arquivo JSON de backup.');
+      console.error('Falha no backup:', e);
+      setInternalBackupMessage('Falha ao realizar o backup.');
       setTimeout(() => setInternalBackupMessage(null), 6000);
     } finally {
       setIsExportingBackup(false);
@@ -3361,6 +3225,7 @@ export default function App() {
     if (isAllYear) {
       let aggCosts = 0;
       let aggNet = 0;
+      const activeMonthKeys = new Set<string>();
 
       for (let m = 1; m <= 12; m++) {
         const mLogs = logs.filter(l => {
@@ -3368,6 +3233,27 @@ export default function App() {
           return y === selectedYear && mNum === m;
         });
         if (mLogs.length === 0) continue;
+
+        // Pré-validação: verifica se o mês teve faturamento operacional ou corridas
+        let monthOpGross = 0;
+        let monthRides = 0;
+        mLogs.forEach(l => {
+          if (l.exibirNoGeral !== false) {
+            const uTotal = (l.appUber?.earnings || 0) + (l.appUber?.bonus || 0);
+            const nTotal = (l.app99?.earnings || 0) + (l.app99?.bonus || 0);
+            const pTotal = (l.appParticular?.earnings || 0);
+            const recomp = l.recompensasExtra || 0;
+            monthOpGross += (uTotal + nTotal + pTotal + recomp);
+            monthRides += ((l.appUber?.rides || 0) + (l.app99?.rides || 0) + (l.appParticular?.rides || 0));
+          }
+        });
+
+        // IGNORAR MESES FUTUROS OU SEM ATIVIDADE OPERACIONAL NO ACUMULADO ANUAL
+        if (monthOpGross === 0 && monthRides === 0) {
+          continue;
+        }
+
+        activeMonthKeys.add(`${selectedYear}-${String(m).padStart(2, '0')}`);
 
         let mOpGross = 0;
         let mCosts = 0;
@@ -3422,9 +3308,6 @@ export default function App() {
           mCosts += (log.custoEnergia || 0) + (log.diariaCarro || 0) + dayCarExpenses + dayFoodExpenses;
         });
 
-        // --- CORREÇÃO: Ignorar meses sem faturamento operacional ---
-        if (mOpGross === 0) continue;
-
         const mKeyPadded = `${selectedYear}-${String(m).padStart(2, '0')}`;
         const mKeyUnpadded = `${selectedYear}-${m}`;
         const mFixedList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
@@ -3438,8 +3321,8 @@ export default function App() {
       }
 
       const totalVariableCosts = totalEnergyCost + totalCarExpenses + totalFoodExpenses;
-      const totalFixedExpenses = Array.from(new Set(filteredLogs.map(l => l.date.slice(0, 7)))).reduce((acc: number, monthStr: string) => {
-        const [y, m] = monthStr.split('-').map(Number);
+      const totalFixedExpenses: number = Array.from(activeMonthKeys).reduce((acc: number, monthKey: string) => {
+        const [y, m] = monthKey.split('-').map(Number);
         const mKeyPadded = `${y}-${String(m).padStart(2, '0')}`;
         const mKeyUnpadded = `${y}-${m}`;
         const mList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
@@ -3752,14 +3635,16 @@ export default function App() {
         const mFixedList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
         const mFixedSum = mFixedList.reduce((sum, item) => sum + item.value, 0);
 
-        const mTotalFixed = mFixedSum > 0 ? mFixedSum : mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0);
-        const mTotalCosts = (cost - mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0)) + mTotalFixed;
+        const hasActivity = gross > 0 || cost > 0;
+        const mTotalFixed = (hasActivity && mFixedSum > 0) ? mFixedSum : (hasActivity ? mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0) : 0);
+        const mTotalCosts = hasActivity ? ((cost - mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0)) + mTotalFixed) : 0;
+        const mNet = hasActivity ? (gross - mTotalCosts) : 0;
 
         return {
           name: MONTH_NAMES[i].slice(0, 3),
           Faturamento: gross,
           Custos: mTotalCosts,
-          Lucro: gross - mTotalCosts
+          Lucro: mNet
         };
       });
     }
@@ -4719,27 +4604,35 @@ export default function App() {
                           return y === selectedYear && mNum === m;
                         });
                         if (mLogs.length === 0) continue;
-                        activeMonthsCount++;
 
                         let mOpGross = 0;
                         let mGross = 0;
                         let mCosts = 0;
                         let mAnjo = 0;
+                        let mRides = 0;
                         mLogs.forEach(l => {
                           if (l.exibirNoGeral) {
-                            const uTotal = l.appUber.earnings + l.appUber.bonus;
-                            const nTotal = l.app99.earnings + l.app99.bonus;
-                            const pTotal = l.appParticular.earnings;
+                            const uTotal = (l.appUber?.earnings || 0) + (l.appUber?.bonus || 0);
+                            const nTotal = (l.app99?.earnings || 0) + (l.app99?.bonus || 0);
+                            const pTotal = (l.appParticular?.earnings || 0);
                             const dayAnjo = l.anjo !== undefined ? l.anjo : (l.outrasFontes || 0);
                             const dayOp = uTotal + nTotal + pTotal + (l.recompensasExtra || 0);
                             mAnjo += dayAnjo;
                             mOpGross += dayOp;
                             mGross += dayOp + dayAnjo;
+                            mRides += ((l.appUber?.rides || 0) + (l.app99?.rides || 0) + (l.appParticular?.rides || 0));
                           }
-                          const dayCarExp = (Object.values(l.carExpenses) as number[]).reduce((a, b) => a + b, 0);
-                          const dayFoodExp = (Object.values(l.foodExpenses) as number[]).reduce((a, b) => a + b, 0);
-                          mCosts += l.custoEnergia + l.diariaCarro + dayCarExp + dayFoodExp;
+                          const dayCarExp = (Object.values(l.carExpenses || {}) as number[]).reduce((a, b) => a + (typeof b === 'number' ? b : 0), 0);
+                          const dayFoodExp = (Object.values(l.foodExpenses || {}) as number[]).reduce((a, b) => a + (typeof b === 'number' ? b : 0), 0);
+                          mCosts += (l.custoEnergia || 0) + (l.diariaCarro || 0) + dayCarExp + dayFoodExp;
                         });
+
+                        // Se o mês não teve faturamento operacional e nem corridas (mês futuro/não trabalhado), NÃO entra no acumulado!
+                        if (mOpGross === 0 && mRides === 0) {
+                          continue;
+                        }
+
+                        activeMonthsCount++;
 
                         const mKeyPadded = `${selectedYear}-${String(m).padStart(2, '0')}`;
                         const mKeyUnpadded = `${selectedYear}-${m}`;
@@ -4831,6 +4724,7 @@ export default function App() {
                           mCosts += l.custoEnergia + l.diariaCarro + dayCarExp + dayFoodExp;
                         });
 
+                        const hasActivity = mOpGross > 0 || mRides > 0;
                         const mKeyPadded = `${selectedYear}-${String(mNum).padStart(2, '0')}`;
                         const mKeyUnpadded = `${selectedYear}-${mNum}`;
                         const mFixedList = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
@@ -4838,8 +4732,8 @@ export default function App() {
 
                         const mLogsDiariaSum = mLogs.reduce((acc, l) => acc + (l.diariaCarro || 0), 0);
                         const mEffectiveFixed = mFixedSum > 0 ? mFixedSum : mLogsDiariaSum;
-                        const mTotalCosts = (mCosts - mLogsDiariaSum) + mEffectiveFixed;
-                        const mNet = mOpGross - mTotalCosts; // Lucro líquido = Faturamento Apps - Custos (Anjo não soma ao lucro)
+                        const mTotalCosts = hasActivity ? ((mCosts - mLogsDiariaSum) + mEffectiveFixed) : 0;
+                        const mNet = hasActivity ? (mOpGross - mTotalCosts) : 0; // Lucro líquido = Faturamento Apps - Custos (Anjo não soma ao lucro)
 
                         return (
                           <div 
@@ -4857,15 +4751,19 @@ export default function App() {
                             <div className="space-y-0.5 font-mono text-[11px]">
                               <div className="flex justify-between text-zinc-300">
                                 <span className="text-zinc-500 text-[10px] font-sans">Faturamento Apps:</span>
-                                <span className="font-bold text-blue-400">{formatBRL(mOpGross)}</span>
+                                <span className={`font-bold ${hasActivity ? 'text-blue-400' : 'text-zinc-500'}`}>{formatBRL(mOpGross)}</span>
                               </div>
                               <div className="flex justify-between text-zinc-300">
                                 <span className="text-zinc-500 text-[10px] font-sans">Custos Ops:</span>
-                                <span className="text-amber-400">{formatBRL(mTotalCosts)}</span>
+                                <span className={hasActivity ? 'text-amber-400' : 'text-zinc-500'}>{formatBRL(mTotalCosts)}</span>
                               </div>
                               <div className="flex justify-between border-t border-zinc-850 pt-1 text-[11px] font-bold">
                                 <span className="text-zinc-400 text-[10px] font-sans">Lucro Líquido:</span>
-                                <span className={mNet >= 0 ? 'text-emerald-400' : 'text-red-400'}>{formatBRL(mNet)}</span>
+                                {hasActivity ? (
+                                  <span className={mNet >= 0 ? 'text-emerald-400' : 'text-red-400'}>{formatBRL(mNet)}</span>
+                                ) : (
+                                  <span className="text-zinc-500 text-[10px] font-sans font-medium italic">Sem atividade</span>
+                                )}
                               </div>
                               {mAnjo > 0 && (
                                 <div className="flex justify-between text-amber-300 pt-1 border-t border-zinc-850/60 text-[10px]">
@@ -8389,8 +8287,8 @@ export default function App() {
                           <FolderDown className="w-4 h-4 stroke-[2.5]" />
                         </div>
                         <div>
-                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Exportar Backup JSON ({exportScope === 'all' ? 'Tudo' : exportScope === 'year' ? 'Ano' : exportScope === 'month' ? 'Mês' : 'Semana'})</span>
-                          <span className="text-[11px] text-zinc-400">Escolha a pasta de destino no aparelho (.json)</span>
+                          <span className="text-xs font-bold text-emerald-300 block group-hover:text-emerald-200">Fazer Backup JSON ({exportScope === 'all' ? 'Tudo' : exportScope === 'year' ? 'Ano' : exportScope === 'month' ? 'Mês' : 'Semana'})</span>
+                          <span className="text-[11px] text-zinc-400">Salvar na pasta escolhida no aparelho (Seletor Nativo)</span>
                         </div>
                       </button>
 
@@ -8492,8 +8390,8 @@ export default function App() {
                           <ShieldCheck className="w-4 h-4" />
                         </div>
                         <div>
-                          <span className="text-xs font-bold text-zinc-200 block group-hover:text-emerald-400">Permissões do Sistema</span>
-                          <span className="text-[11px] text-zinc-400">Câmera, Microfone e Notificações</span>
+                          <span className="text-xs font-bold text-zinc-200 block group-hover:text-emerald-400">Permissões e Notificações do Sistema</span>
+                          <span className="text-[11px] text-zinc-400">Ver e gerenciar todas as permissões e alertas</span>
                         </div>
                       </button>
 
@@ -10087,95 +9985,7 @@ export default function App() {
         </div>
       )}
 
-      {/* POP-UP DE ESCOLHA DE PASTA PARA SALVAR BACKUP */}
-      {isExportFolderModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fade-in">
-          <div className="bg-[#121215] border border-emerald-500/40 rounded-2xl max-w-md w-full p-5 sm:p-6 space-y-4 shadow-2xl relative overflow-hidden">
-            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-600" />
-            
-            {/* Header */}
-            <div className="flex items-start justify-between gap-3 pt-1">
-              <div className="flex items-center gap-3">
-                <div className="p-3 bg-emerald-500/15 border border-emerald-500/30 rounded-xl text-emerald-400">
-                  <FolderDown className="w-6 h-6" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-zinc-100">Onde Deseja Salvar o Backup?</h3>
-                  <p className="text-xs text-zinc-400">
-                    Escolha a pasta de destino no seu aparelho
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsExportFolderModalOpen(false)}
-                className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
 
-            {/* File info pill */}
-            <div className="p-2.5 bg-zinc-900/90 border border-zinc-800 rounded-xl flex items-center justify-between text-[11px] text-zinc-300">
-              <div className="flex items-center gap-2 truncate">
-                <FileText className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span className="truncate font-mono">Backup_Controle_Diario_{new Date().toLocaleDateString('pt-BR').replace(/\//g, '-')}.json</span>
-              </div>
-              <span className="px-2 py-0.5 bg-emerald-500/15 text-emerald-300 font-bold rounded-md shrink-0 ml-2">
-                {exportScope === 'all' ? 'Tudo' : exportScope === 'year' ? 'Ano' : exportScope === 'month' ? 'Mês' : 'Semana'}
-              </span>
-            </div>
-
-            {/* Folder Destination Options */}
-            <div className="space-y-2.5 pt-1">
-              {/* Opção: Seletor Nativo do Sistema ("Salvar em...") */}
-              <button
-                type="button"
-                onClick={() => handleInternalExportWithTarget('system_picker')}
-                disabled={isExportingBackup}
-                className="w-full p-3.5 bg-zinc-900 hover:bg-zinc-800/90 border border-zinc-800 hover:border-amber-500/50 rounded-xl flex items-center justify-between text-left transition-all cursor-pointer group hover:scale-[1.01]"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 bg-amber-500/15 text-amber-400 border border-amber-500/30 rounded-lg group-hover:scale-110 transition-transform">
-                    <Share2 className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-zinc-100 group-hover:text-amber-300">Escolher Pasta no Celular ("Salvar em...")</span>
-                      <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-500/20 text-amber-300 rounded border border-amber-500/30">Nativo</span>
-                    </div>
-                    <span className="text-[11px] text-zinc-400 block mt-0.5">
-                      No APK instalado, abre o menu do Android ("Salvar em...") ou Compartilhar
-                    </span>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-amber-400 transition-colors shrink-0" />
-              </button>
-            </div>
-
-            {/* Aviso informativo de ambiente (Navegador vs APK Nativo) */}
-            {!Boolean((window as any)?.Capacitor?.isNativePlatform?.()) && (
-              <div className="p-2.5 bg-blue-500/10 border border-blue-500/20 rounded-xl text-[11px] text-blue-300 flex items-start gap-2">
-                <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-                <p className="leading-relaxed">
-                  <strong>Aviso do Navegador:</strong> No Chrome do celular, o Android bloqueia a escolha manual de pastas por segurança e direciona os arquivos para <strong>Downloads</strong>. No <strong>APK instalado</strong>, o app tem permissão para salvar direto em <strong>Documentos</strong> ou abrir o seletor.
-                </p>
-              </div>
-            )}
-
-            {/* Footer Buttons */}
-            <div className="pt-2 flex items-center justify-end">
-              <button
-                type="button"
-                onClick={() => setIsExportFolderModalOpen(false)}
-                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
-              >
-                Cancelar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* MODAL DE SOLICITAÇÃO INICIAL DE PERMISSÕES */}
       <PermissionsModal

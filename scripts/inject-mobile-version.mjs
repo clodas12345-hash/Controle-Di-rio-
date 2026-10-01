@@ -40,4 +40,11 @@ function injectMobileVersion() {
   console.log('🚀 Configuração do pacote móvel sincronizada com sucesso!');
 }
 
+import { injectSafPlugin } from './inject-saf-plugin.mjs';
+
 injectMobileVersion();
+try {
+  injectSafPlugin();
+} catch (e) {
+  console.warn('Injeção SAF ignorada:', e);
+}

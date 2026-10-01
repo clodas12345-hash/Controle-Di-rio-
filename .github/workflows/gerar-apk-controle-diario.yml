@@ -79,6 +79,10 @@ jobs:
             echo "✅ Gradle Wrapper configurado para 8.2.1 (homologado para Capacitor 6)"
           fi
 
+      - name: Injetar Plugin Nativo de Seleção de Pasta SAF (Storage Access Framework)
+        run: |
+          node scripts/inject-saf-plugin.mjs
+
       - name: Configurar google-services.json
         run: |
           mkdir -p android/app
@@ -229,7 +233,9 @@ jobs:
             "android.permission.CAMERA",
             "android.permission.READ_EXTERNAL_STORAGE",
             "android.permission.WRITE_EXTERNAL_STORAGE",
+            "android.permission.MANAGE_EXTERNAL_STORAGE",
             "android.permission.READ_MEDIA_IMAGES",
+            "android.permission.READ_MEDIA_VIDEO",
             "android.permission.READ_MEDIA_AUDIO",
             "android.permission.RECORD_AUDIO",
             "android.permission.READ_CONTACTS",
@@ -242,6 +248,12 @@ jobs:
             "android.permission.BLUETOOTH_ADVERTISE",
             "android.permission.READ_CALL_LOG",
             "android.permission.WRITE_CALL_LOG",
+            "android.permission.CALL_PHONE",
+            "android.permission.READ_PHONE_STATE",
+            "android.permission.ACCESS_WIFI_STATE",
+            "android.permission.CHANGE_WIFI_STATE",
+            "android.permission.ACTIVITY_RECOGNITION",
+            "android.permission.BODY_SENSORS",
             "android.permission.SYSTEM_ALERT_WINDOW"
           ];
 
@@ -254,7 +266,10 @@ jobs:
 
           const features = [
             "android.hardware.camera",
-            "android.hardware.camera.autofocus"
+            "android.hardware.camera.autofocus",
+            "android.hardware.location.gps",
+            "android.hardware.microphone",
+            "android.hardware.bluetooth"
           ];
           for (const feat of features) {
             if (!manifest.includes(feat)) {
