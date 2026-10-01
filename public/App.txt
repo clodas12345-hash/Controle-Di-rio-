@@ -1504,29 +1504,38 @@ export default function App() {
       const content = JSON.stringify(backupData, null, 2);
       const isCapacitorNative = Boolean((window as any)?.Capacitor?.isNativePlatform?.());
 
-      // 1. APLICATIVO ANDROID (APK): Storage Access Framework (SAF) nativo
+      // 1. APLICATIVO ANDROID (APK): Capacitor Filesystem + Share Plugin
       if (isCapacitorNative) {
         try {
-          const SafStorage = registerPlugin<any>('SafStorage');
-          const result = await SafStorage.saveFileToFolder({
-            fileName: jsonFileName,
+          const { Filesystem, Directory, Encoding } = await import('@capacitor/filesystem');
+          const { Share } = await import('@capacitor/share');
+
+          const path = `${jsonFileName}`;
+          
+          await Filesystem.writeFile({
+            path: path,
             data: content,
-            mimeType: 'application/json'
+            directory: Directory.Documents,
+            encoding: Encoding.UTF8,
           });
 
-          if (result?.success) {
-            setInternalBackupMessage(`Sucesso! Backup salvo na pasta escolhida:\n${jsonFileName}`);
-            setTimeout(() => setInternalBackupMessage(null), 6000);
-            return;
-          }
+          const uri = await Filesystem.getUri({
+            directory: Directory.Documents,
+            path: path
+          });
+
+          await Share.share({
+            title: 'Backup GKD Controle Diário',
+            text: 'Aqui está o seu arquivo de backup do GKD Controle Diário.',
+            url: uri.uri,
+            dialogTitle: 'Salvar ou Compartilhar Backup',
+          });
+
+          setInternalBackupMessage(`Sucesso! Backup preparado para salvar/compartilhar:\n${jsonFileName}`);
+          setTimeout(() => setInternalBackupMessage(null), 6000);
+          return;
         } catch (nativeErr: any) {
-          const msg = (nativeErr?.message || String(nativeErr)).toLowerCase();
-          if (msg.includes('cancelado') || msg.includes('cancel')) {
-            setInternalBackupMessage('Backup cancelado');
-            setTimeout(() => setInternalBackupMessage(null), 4000);
-            return;
-          }
-          console.warn('SafStorage nativo indisponível ou falhou:', nativeErr);
+          console.warn('Capacitor Filesystem nativo falhou:', nativeErr);
         }
       }
 
@@ -2783,8 +2792,10 @@ export default function App() {
     const defaultValKwh = String(carProfile.kwhCostRate || (carProfile.vehicleType === 'eletrico' ? 1.05 : 5.50)).replace('.', ',');
     const defaultCap = String(carProfile.batteryCapacityKwh || (carProfile.vehicleType === 'eletrico' ? 53.6 : 50)).replace('.', ',');
     
-    setValorKwh(defaultValKwh);
-    setCapacidadeBateria(defaultCap);
+    if (!editingLogId) {
+      setValorKwh(defaultValKwh);
+      setCapacidadeBateria(defaultCap);
+    }
     
     const [y, m, d] = (formDate || '').split('-').map(Number);
     if (y && m) {
@@ -3125,7 +3136,6 @@ export default function App() {
         toll: parseNum(toll),
         maintenance: parseNum(maintenance),
         parking: parseNum(parking),
-        publicCharging: parseNum(publicCharging),
         other: parseNum(carOther),
       },
       foodExpenses: {
@@ -7036,9 +7046,13 @@ export default function App() {
                         inputMode="decimal"
                         value={valorKwh}
                         onChange={(e) => {
-                          const val = e.target.value.replace(/[^\d.,]/g, '');
+                          // Allow numbers and a single comma
+                          let val = e.target.value.replace(/[^0-9,]/g, '');
+                          const parts = val.split(',');
+                          if (parts.length > 2) {
+                            val = parts[0] + ',' + parts.slice(1).join('');
+                          }
                           setValorKwh(val);
-                          setIsEnergyCostOverridden(false);
                         }}
                         className={`w-full bg-[#0d0d0f] border rounded-xl text-sm py-3 px-4 font-mono focus:outline-none focus:ring-1 transition-all ${
                           Math.abs((parseFloat(String(valorKwh).replace(',', '.')) || 0) - (carProfile.kwhCostRate || (carProfile.vehicleType === 'eletrico' ? 1.05 : 5.50))) > 0.01
@@ -7196,7 +7210,7 @@ export default function App() {
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-mono font-bold text-pink-400">
-                        {formatBRL(parseNum(wash) + parseNum(toll) + parseNum(maintenance) + parseNum(parking) + parseNum(publicCharging) + parseNum(carOther))}
+                        {formatBRL(parseNum(wash) + parseNum(toll) + parseNum(maintenance) + parseNum(parking) + parseNum(carOther))}
                       </span>
                       {isCarExpensesOpen ? <ChevronUp className="w-4 h-4 text-zinc-400" /> : <ChevronDown className="w-4 h-4 text-zinc-400" />}
                     </div>
@@ -7244,17 +7258,6 @@ export default function App() {
                           placeholder="0,00"
                           value={parking}
                           onChange={(e) => handleCurrencyChange(e.target.value, setParking)}
-                          className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-zinc-400 font-medium">Recarga Externa/Rua (R$)</label>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          placeholder="0,00"
-                          value={publicCharging}
-                          onChange={(e) => handleCurrencyChange(e.target.value, setPublicCharging)}
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
