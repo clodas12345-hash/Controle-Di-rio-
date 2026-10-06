@@ -12,6 +12,7 @@ import { requestNotificationPermission, sendAppNotification } from './services/n
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
+import { App as CapApp } from '@capacitor/app';
 import JSZip from 'jszip';
 import { 
   Car, 
@@ -1741,6 +1742,76 @@ export default function App() {
       document.body.style.overflow = '';
     };
   }, [isAnyModalOpen]);
+
+  // Gerenciamento do botão voltar nativo do Android (@capacitor/app)
+  // Nunca fecha o app: volta para a tela inicial se estiver em outra aba ou com modal aberto; se já estiver na tela inicial, não faz nada.
+  const handleHardwareBackRef = useRef<() => void>(() => {});
+  handleHardwareBackRef.current = () => {
+    // 1. Se houver algum modal aberto, fecha os modais e volta à tela inicial se necessário
+    if (isAnyModalOpen) {
+      setIsModalOpen(false);
+      setIsCarModalOpen(false);
+      setIsKpisModalOpen(false);
+      setIsEfficiencyModalOpen(false);
+      setIsAppShareModalOpen(false);
+      setIsExcelImportOpen(false);
+      setIsMultimodalAiOpen(false);
+      setIsAssistantOpen(false);
+      setIsDatePickerModalOpen(false);
+      setIsHelpModalOpen(false);
+      setIsProjectionModalOpen(false);
+      setIsConflictModalOpen(false);
+      setIsConfirmClearAllModalOpen(false);
+      setIsDeepSweepModalOpen(false);
+      setIsPermissionsModalOpen(false);
+      if (activeTab !== 'visao-geral') {
+        setActiveTab('visao-geral');
+      }
+      return;
+    }
+
+    // 2. Se estiver no formulário de adicionar despesa fixa na aba de contas
+    if (isAddingFixed) {
+      setIsAddingFixed(false);
+      return;
+    }
+
+    // 3. Se estiver na visualização do ano completo, voltar para o mês na tela inicial
+    if (isAllYear) {
+      setIsAllYear(false);
+      return;
+    }
+
+    // 4. Se estiver em qualquer outra aba que não seja a tela inicial ('visao-geral'), voltar para a tela inicial
+    if (activeTab !== 'visao-geral') {
+      setActiveTab('visao-geral');
+      return;
+    }
+
+    // 5. Se já estiver na tela inicial ('visao-geral' sem modais abertos), não faz nada (nunca fecha o app)
+  };
+
+  useEffect(() => {
+    let backListenerHandle: any = null;
+
+    const setupBackListener = async () => {
+      try {
+        backListenerHandle = await CapApp.addListener('backButton', () => {
+          handleHardwareBackRef.current();
+        });
+      } catch (err) {
+        console.warn('Erro ao configurar listener do backButton do Capacitor:', err);
+      }
+    };
+
+    setupBackListener();
+
+    return () => {
+      if (backListenerHandle && typeof backListenerHandle.remove === 'function') {
+        backListenerHandle.remove();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const handleFocus = (e: FocusEvent) => {
