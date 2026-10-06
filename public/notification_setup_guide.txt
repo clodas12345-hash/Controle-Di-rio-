@@ -1,0 +1,83 @@
+==================================================
+GUIA DE CONFIGURAÇÃO DE NOTIFICAÇÕES NATIVAS (CAPACITOR)
+==================================================
+
+1. INSTALAÇÃO DO PLUGIN:
+npm install @capacitor/local-notifications
+npx cap sync android
+
+--------------------------------------------------
+
+2. CÓDIGO DO SERVIÇO DE NOTIFICAÇÃO (notificationService.ts):
+--------------------------------------------------
+import { Capacitor } from '@capacitor/core';
+import { LocalNotifications } from '@capacitor/local-notifications';
+
+export async function requestNotificationPermission(): Promise<boolean> {
+  try {
+    if (Capacitor.isNativePlatform()) {
+      const status = await LocalNotifications.requestPermissions();
+      return status.display === 'granted';
+    }
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      if (Notification.permission === 'granted') return true;
+      const permission = await Notification.requestPermission();
+      return permission === 'granted';
+    }
+  } catch (error) {
+    console.warn('Erro ao solicitar permissão de notificação:', error);
+  }
+  return false;
+}
+
+export async function sendAppNotification(title: string, options?: { body?: string; id?: number }) {
+  try {
+    if (Capacitor.isNativePlatform()) {
+      await LocalNotifications.schedule({
+        notifications: [
+          {
+            title,
+            body: options?.body || '',
+            id: options?.id || Math.floor(Math.random() * 1000000) + 1,
+            smallIcon: 'ic_stat_icon',
+            sound: 'default'
+          }
+        ]
+      });
+      return;
+    }
+
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      new Notification(title, {
+        body: options?.body || '',
+        icon: '/icon2.png',
+        tag: 'app-notification'
+      });
+    }
+  } catch (error) {
+    console.warn('Não foi possível disparar notificação:', error);
+  }
+}
+
+--------------------------------------------------
+
+3. CONFIGURAÇÃO NO capacitor.config.json:
+--------------------------------------------------
+"plugins": {
+  "LocalNotifications": {
+    "smallIcon": "ic_stat_icon",
+    "iconColor": "#34d399",
+    "sound": "default"
+  }
+}
+
+--------------------------------------------------
+
+4. MANIFEST E ANDROID (MainActivity.java):
+--------------------------------------------------
+O MainActivity.java não precisa de registro manual de plugins, pois o Capacitor faz o auto-linking:
+
+package com.seuote.app;
+import com.getcapacitor.BridgeActivity;
+
+public class MainActivity extends BridgeActivity {}

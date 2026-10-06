@@ -3599,6 +3599,39 @@ export default function App() {
     }
   };
 
+  // Swipe gesture handlers for sliding calendar months
+  const touchStartXRef = useRef<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
+
+  const handleCalendarTouchStart = (e: React.TouchEvent) => {
+    if (e.touches && e.touches.length > 0) {
+      touchStartXRef.current = e.touches[0].clientX;
+      touchStartYRef.current = e.touches[0].clientY;
+    }
+  };
+
+  const handleCalendarTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartXRef.current === null || touchStartYRef.current === null) return;
+    if (!e.changedTouches || e.changedTouches.length === 0) return;
+
+    const deltaX = e.changedTouches[0].clientX - touchStartXRef.current;
+    const deltaY = e.changedTouches[0].clientY - touchStartYRef.current;
+
+    // Trigger month swipe when horizontal movement is >= 40px and dominant over vertical movement
+    if (Math.abs(deltaX) >= 40 && Math.abs(deltaX) > Math.abs(deltaY) * 1.2) {
+      if (deltaX < 0) {
+        // Deslizar para a esquerda -> Próximo Mês
+        handleNextMonth();
+      } else {
+        // Deslizar para a direita -> Mês Anterior
+        handlePrevMonth();
+      }
+    }
+
+    touchStartXRef.current = null;
+    touchStartYRef.current = null;
+  };
+
   // Helper to construct dates for the monthly calendar view
   const daysInSelectedMonth = new Date(selectedYear, selectedMonth, 0).getDate();
   const firstDayIndex = new Date(selectedYear, selectedMonth - 1, 1).getDay(); // Day of week index 0-6
@@ -4048,7 +4081,11 @@ export default function App() {
 
           <div className="flex items-center justify-between sm:justify-end w-full sm:w-auto gap-3">
             {/* Elegant Month Navigator */}
-            <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 p-1 rounded-xl">
+            <div 
+              onTouchStart={handleCalendarTouchStart}
+              onTouchEnd={handleCalendarTouchEnd}
+              className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 p-1 rounded-xl touch-pan-y"
+            >
               <button 
                 onClick={handlePrevMonth}
                 className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-zinc-100 transition-colors cursor-pointer"
@@ -4584,7 +4621,11 @@ export default function App() {
         <section className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           
           {/* Calendar Heatmap/Overview Grid (Span 8/12) */}
-          <div className="lg:col-span-8 bg-zinc-900/80 border border-zinc-800 rounded-2xl overflow-hidden shadow-lg transition-all">
+          <div 
+            onTouchStart={handleCalendarTouchStart}
+            onTouchEnd={handleCalendarTouchEnd}
+            className="lg:col-span-8 bg-zinc-900/80 border border-zinc-800 rounded-2xl overflow-hidden shadow-lg transition-all touch-pan-y"
+          >
             <div className="w-full flex items-center justify-between p-3 bg-zinc-900 border-b border-zinc-800/80">
                 <div className="flex items-center gap-3">
                 <div className="p-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl">
