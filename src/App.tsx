@@ -1900,12 +1900,14 @@ export default function App() {
 
     const kmRemaining = targetKm - currentKm;
     
-    // Use interval to determine alert threshold if set
-    const threshold = carProfile.maintenanceIntervalKm ? Math.min(2000, carProfile.maintenanceIntervalKm * 0.2) : 2000;
+    // Use user-defined threshold, default to 2000 if not set
+    const threshold = carProfile.maintenanceAlertThresholdKm || 2000;
     
     if (kmRemaining <= threshold && kmRemaining >= -5000) { 
       let type: '2k' | '1k' = '2k';
-      if (kmRemaining <= (carProfile.maintenanceIntervalKm ? carProfile.maintenanceIntervalKm * 0.1 : 1000)) type = '1k';
+      // Use user-defined threshold to determine '1k' warning level
+      const criticalThreshold = carProfile.maintenanceAlertThresholdKm ? carProfile.maintenanceAlertThresholdKm * 0.5 : 1000;
+      if (kmRemaining <= criticalThreshold) type = '1k';
       
       const todayStr = new Date().toISOString().split('T')[0];
       const lastAlertDate = localStorage.getItem('gkd_maintenance_alert_date');
@@ -1914,7 +1916,7 @@ export default function App() {
         setMaintenanceAlert({ show: true, type, remaining: kmRemaining, currentKm, targetKm });
       }
     }
-  }, [carProfile.nextMaintenanceKm, carProfile.maintenanceIntervalKm, logs]);
+  }, [carProfile.nextMaintenanceKm, carProfile.maintenanceIntervalKm, carProfile.maintenanceAlertThresholdKm, logs]);
 
   useEffect(() => {
     if ((window as any).isClearingAll) return;
@@ -9197,6 +9199,18 @@ export default function App() {
                       placeholder="Ex: 10000"
                       className="w-full bg-zinc-900 border border-zinc-800 focus:border-blue-500 rounded-xl px-3.5 py-2 text-xs text-zinc-100 outline-none transition-colors"
                     />
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-300 mb-1">
+                        Alerta (KM antes)
+                      </label>
+                      <input
+                        type="number"
+                        value={carProfile.maintenanceAlertThresholdKm || ''}
+                        onChange={(e) => setCarProfile(prev => ({ ...prev, maintenanceAlertThresholdKm: parseInt(e.target.value) || 0 }))}
+                        placeholder="Ex: 500"
+                        className="w-full bg-zinc-900 border border-zinc-800 focus:border-blue-500 rounded-xl px-3.5 py-2 text-xs text-zinc-100 outline-none transition-colors"
+                      />
+                    </div>
                   </div>
 
                   <div>
