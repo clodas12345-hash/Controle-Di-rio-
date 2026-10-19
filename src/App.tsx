@@ -13,7 +13,7 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { App as CapApp } from '@capacitor/app';
-import { fetchFipeValue } from './services/fipeService';
+import { fetchFipeValue, fetchFipePriceByCode, FipeAlternativeModel } from './services/fipeService';
 import JSZip from 'jszip';
 import { 
   Car, 
@@ -1404,37 +1404,93 @@ export default function App() {
   const [isFetchingFipe, setIsFetchingFipe] = useState(false);
   const [fipeInputStr, setFipeInputStr] = useState<string>('');
   const [fipeStatusMessage, setFipeStatusMessage] = useState<{ text: string, type: 'error' | 'success' | 'info' } | null>(null);
+  const [fipeAlternatives, setFipeAlternatives] = useState<FipeAlternativeModel[]>([]);
+  const [fipeDetails, setFipeDetails] = useState<{ brandCode: string; modelFullName: string; refMonth: string; fipeCode: string } | null>(null);
+
+  const handleAutoFetchFipe = async (overrideModel?: string, overrideYear?: string) => {
+    const modelToSearch = overrideModel !== undefined ? overrideModel : carProfile.modelName;
+    const yearToSearch = overrideYear !== undefined ? overrideYear : carProfile.manufactureYear;
+
+    if (!modelToSearch || modelToSearch.trim().length < 2) {
+      setFipeStatusMessage({ text: 'Preencha a Marca ou Modelo do veículo para consultar a FIPE.', type: 'info' });
+      return;
+    }
+
+    setIsFetchingFipe(true);
+    setFipeStatusMessage({ text: 'Consultando API oficial FIPE...', type: 'info' });
+    try {
+      const res = await fetchFipeValue(modelToSearch, yearToSearch);
+      if (res && res.value > 0) {
+        setCarProfile(prev => ({ ...prev, fipeValue: res.value }));
+        setFipeInputStr(formatMoneyValue(res.value));
+        setFipeDetails({
+          brandCode: res.brandCode,
+          modelFullName: res.modelFullName,
+          refMonth: res.referenceMonth,
+          fipeCode: res.fipeCode
+        });
+        if (res.alternativeModels && res.alternativeModels.length > 1) {
+          setFipeAlternatives(res.alternativeModels);
+        } else {
+          setFipeAlternatives([]);
+        }
+        setFipeStatusMessage({ 
+          text: `✓ Cotação: ${formatBRL(res.value)} (${res.modelFullName})${res.referenceMonth ? ` • Ref: ${res.referenceMonth}` : ''}`, 
+          type: 'success' 
+        });
+      } else {
+        setFipeStatusMessage({ 
+          text: `O modelo "${modelToSearch}" não foi localizado na base FIPE. Digite o valor manualmente.`, 
+          type: 'error' 
+        });
+        setFipeAlternatives([]);
+      }
+    } catch (e) {
+      console.warn('Erro ao consultar FIPE:', e);
+      setFipeStatusMessage({ text: 'Não foi possível consultar a API FIPE no momento. Digite o valor diretamente abaixo.', type: 'error' });
+    } finally {
+      setIsFetchingFipe(false);
+    }
+  };
+
+  const handleSelectAlternativeModel = async (brandCode: string, modelCode: string | number) => {
+    setIsFetchingFipe(true);
+    setFipeStatusMessage({ text: 'Atualizando cotação para o modelo selecionado...', type: 'info' });
+    try {
+      const res = await fetchFipePriceByCode(brandCode, modelCode, carProfile.manufactureYear);
+      if (res && res.value > 0) {
+        setCarProfile(prev => ({ ...prev, fipeValue: res.value }));
+        setFipeInputStr(formatMoneyValue(res.value));
+        setFipeDetails({
+          brandCode: res.brandCode,
+          modelFullName: res.modelFullName,
+          refMonth: res.referenceMonth,
+          fipeCode: res.fipeCode
+        });
+        setFipeStatusMessage({ 
+          text: `✓ Cotação: ${formatBRL(res.value)} (${res.modelFullName})`, 
+          type: 'success' 
+        });
+      }
+    } catch (err) {
+      console.warn('Erro ao selecionar modelo FIPE alternativo:', err);
+    } finally {
+      setIsFetchingFipe(false);
+    }
+  };
 
   useEffect(() => {
     if (isCarModalOpen) {
       setFipeInputStr(carProfile.fipeValue && carProfile.fipeValue > 0 ? formatMoneyValue(carProfile.fipeValue) : '');
       setFipeStatusMessage(null);
+      setFipeAlternatives([]);
+      
+      // Busca automática se tiver nome do carro e valor ainda não definido
+      if (carProfile.modelName && carProfile.modelName.trim().length >= 2 && (!carProfile.fipeValue || carProfile.fipeValue === 0)) {
+        handleAutoFetchFipe(carProfile.modelName, carProfile.manufactureYear);
+      }
     }
   }, [isCarModalOpen]);
-
-  const handleAutoFetchFipe = async () => {
-    if (!carProfile.modelName) {
-      setFipeStatusMessage({ text: 'Preencha a Marca / Modelo do carro acima antes de buscar.', type: 'error' });
-      return;
-    }
-    setIsFetchingFipe(true);
-    setFipeStatusMessage({ text: 'Consultando API pública da FIPE na internet...', type: 'info' });
-    try {
-      const res = await fetchFipeValue(carProfile.modelName, carProfile.manufactureYear);
-      if (res && res.value > 0) {
-        setCarProfile(prev => ({ ...prev, fipeValue: res.value }));
-        setFipeInputStr(formatMoneyValue(res.value));
-        setFipeStatusMessage({ text: `Cotação encontrada: ${formatBRL(res.value)} (${res.modelFullName})! Valor preenchido.`, type: 'success' });
-      } else {
-        setFipeStatusMessage({ text: `O modelo "${carProfile.modelName}" não foi localizado na base da FIPE. Digite o valor diretamente no campo abaixo.`, type: 'error' });
-      }
-    } catch (e) {
-      console.warn('Erro ao consultar FIPE:', e);
-      setFipeStatusMessage({ text: 'Não foi possível consultar a API FIPE online no momento. Digite o valor diretamente abaixo.', type: 'error' });
-    } finally {
-      setIsFetchingFipe(false);
-    }
-  };
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
   const [helpActiveTab, setHelpActiveTab] = useState<'geral' | 'guia' | 'energia' | 'diaria' | 'kpis' | 'ia' | 'faq'>('geral');
   const [helpSearchQuery, setHelpSearchQuery] = useState('');
@@ -5936,7 +5992,7 @@ export default function App() {
                           body: 'Esta é uma notificação de teste.',
                           id: 999,
                           channelId: 'padrao',
-                          smallIcon: 'ic_stat_icon_config_sample',
+                          smallIcon: 'icon',
                           schedule: { at: new Date(Date.now() + 5000) }
                         }
                       ]
@@ -9064,6 +9120,11 @@ export default function App() {
                       type="text"
                       value={carProfile.modelName}
                       onChange={(e) => setCarProfile(prev => ({ ...prev, modelName: e.target.value }))}
+                      onBlur={() => {
+                        if (carProfile.modelName && carProfile.modelName.trim().length >= 2) {
+                          handleAutoFetchFipe(carProfile.modelName, carProfile.manufactureYear);
+                        }
+                      }}
                       placeholder={carProfile.vehicleType === 'eletrico' ? "Ex: BYD Dolphin EV, GWM Ora 03" : "Ex: Chevrolet Onix, Hyundai HB20"}
                       className="w-full bg-zinc-900 border border-zinc-700 focus:border-emerald-400 rounded-xl px-4 py-3 text-sm font-semibold text-zinc-100 outline-none transition-colors"
                     />
@@ -9117,6 +9178,11 @@ export default function App() {
                       type="text"
                       value={carProfile.manufactureYear}
                       onChange={(e) => setCarProfile(prev => ({ ...prev, manufactureYear: e.target.value }))}
+                      onBlur={() => {
+                        if (carProfile.modelName && carProfile.modelName.trim().length >= 2) {
+                          handleAutoFetchFipe(carProfile.modelName, carProfile.manufactureYear);
+                        }
+                      }}
                       placeholder="Ex: 2024 ou 2024/2025"
                       className="w-full bg-zinc-900 border border-zinc-700 focus:border-emerald-400 rounded-xl px-4 py-3 text-sm font-semibold text-zinc-100 outline-none transition-colors"
                     />
@@ -9136,96 +9202,114 @@ export default function App() {
                     />
                   </div>
 
-                  {/* Manual Input: Valor de Mercado (FIPE) */}
-                  <div className="sm:col-span-2 p-4 bg-zinc-950/80 border-2 border-emerald-500/40 rounded-2xl space-y-2.5">
-                    <div className="flex flex-wrap justify-between items-center gap-2">
-                      <div>
-                        <label className="text-sm font-black text-emerald-300 flex items-center gap-1.5">
-                          <DollarSign className="w-4 h-4 text-emerald-400 stroke-[2.5]" />
-                          <span>Valor de Mercado (FIPE)</span>
-                        </label>
-                        <p className="text-[11px] text-zinc-400">
-                          Preencha manualmente o valor de mercado ou da tabela FIPE do seu veículo.
-                        </p>
-                      </div>
+                  {/* Card Tabela FIPE (Compacto, Moderno & Automático) */}
+                  <div className="sm:col-span-2 bg-[#0e1117] border border-emerald-500/30 rounded-2xl p-3.5 space-y-2.5 shadow-lg shadow-emerald-950/20">
+                    <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
-                        {(carProfile.fipeValue && carProfile.fipeValue > 0) || fipeInputStr ? (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setFipeInputStr('');
-                              setCarProfile(prev => ({ ...prev, fipeValue: 0 }));
-                            }}
-                            className="text-xs bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer flex items-center gap-1"
-                            title="Apagar valor para digitar do zero"
-                          >
-                            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                            <span>Limpar / Apagar</span>
-                          </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          onClick={handleAutoFetchFipe}
-                          disabled={isFetchingFipe}
-                          className="text-xs text-zinc-300 hover:text-emerald-300 bg-zinc-900 hover:bg-zinc-850 border border-zinc-700 px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer flex items-center gap-1"
-                          title="Tentar buscar cotação na API pública da FIPE"
-                        >
-                          {isFetchingFipe ? 'Consultando...' : '🔍 Buscar FIPE Auto'}
-                        </button>
+                        <div className="p-1.5 bg-emerald-500/10 text-emerald-400 rounded-lg border border-emerald-500/20">
+                          <DollarSign className="w-4 h-4 stroke-[2.5]" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black text-zinc-100">Tabela FIPE (Valor de Mercado)</span>
+                            <span className="text-[9px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded-full font-bold">
+                              Automático
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-zinc-400">
+                            Consulta oficial FIPE para depreciação e custo real
+                          </p>
+                        </div>
                       </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleAutoFetchFipe()}
+                        disabled={isFetchingFipe}
+                        className="text-xs bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-black px-3 py-1.5 rounded-xl transition-all shadow-md shadow-emerald-500/20 flex items-center gap-1.5 cursor-pointer shrink-0"
+                        title="Buscar cotação oficial FIPE"
+                      >
+                        <Search className={`w-3.5 h-3.5 ${isFetchingFipe ? 'animate-spin' : ''}`} />
+                        <span>{isFetchingFipe ? 'Buscando...' : 'Buscar FIPE'}</span>
+                      </button>
                     </div>
 
+                    {/* Input Field com Valor Formatado */}
+                    <div className="relative flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="0,00"
+                          value={fipeInputStr}
+                          onChange={(e) => handleCurrencyChange(e.target.value, (val) => {
+                            setFipeInputStr(val);
+                            setCarProfile(prev => ({ ...prev, fipeValue: parseNum(val) }));
+                          })}
+                          className="w-full bg-[#141822] border border-zinc-750 focus:border-emerald-400 rounded-xl px-3 py-2 text-base font-mono font-bold text-emerald-300 outline-none transition-colors pr-10"
+                        />
+                        <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono font-bold">R$</span>
+                      </div>
+
+                      {(carProfile.fipeValue || fipeInputStr) ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFipeInputStr('');
+                            setCarProfile(prev => ({ ...prev, fipeValue: 0 }));
+                            setFipeStatusMessage(null);
+                            setFipeAlternatives([]);
+                            setFipeDetails(null);
+                          }}
+                          className="p-2 text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-xl transition-colors cursor-pointer border border-transparent hover:border-rose-500/20"
+                          title="Limpar valor"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      ) : null}
+                    </div>
+
+                    {/* Status / Mensagem da FIPE */}
                     {fipeStatusMessage && (
-                      <div className={`p-2.5 rounded-xl text-xs font-semibold flex items-center justify-between gap-2 transition-all ${
+                      <div className={`p-2 rounded-xl text-xs font-semibold flex items-center justify-between gap-2 transition-all ${
                         fipeStatusMessage.type === 'error'
-                          ? 'bg-rose-950/70 border border-rose-500/50 text-rose-300'
+                          ? 'bg-rose-950/60 border border-rose-500/40 text-rose-300'
                           : fipeStatusMessage.type === 'success'
-                          ? 'bg-emerald-950/70 border border-emerald-500/50 text-emerald-300'
-                          : 'bg-blue-950/70 border border-blue-500/50 text-blue-300 animate-pulse'
+                          ? 'bg-emerald-950/60 border border-emerald-500/40 text-emerald-300'
+                          : 'bg-sky-950/60 border border-sky-500/40 text-sky-300 animate-pulse'
                       }`}>
-                        <span>{fipeStatusMessage.text}</span>
+                        <span className="text-[11px] leading-tight">{fipeStatusMessage.text}</span>
                         <button 
                           type="button" 
                           onClick={() => setFipeStatusMessage(null)}
-                          className="text-zinc-400 hover:text-zinc-200 text-xs px-1.5 py-0.5 rounded cursor-pointer"
+                          className="text-zinc-400 hover:text-zinc-200 text-xs px-1.5 py-0.5 rounded cursor-pointer shrink-0"
                         >
                           ✕
                         </button>
                       </div>
                     )}
 
-                    <div className="relative">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={fipeInputStr}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setFipeInputStr(val);
-                          const parsed = parseNum(val);
-                          setCarProfile(prev => ({ ...prev, fipeValue: parsed }));
-                        }}
-                        onBlur={() => {
-                          if (carProfile.fipeValue && carProfile.fipeValue > 0) {
-                            setFipeInputStr(formatMoneyValue(carProfile.fipeValue));
-                          }
-                        }}
-                        placeholder="Ex: 85.000,00 ou digite o valor"
-                        className="w-full bg-zinc-900 border-2 border-zinc-700 focus:border-emerald-400 rounded-xl px-4 py-3.5 text-base sm:text-lg font-bold font-mono text-emerald-300 outline-none transition-colors pr-12 shadow-inner"
-                      />
-                      <span className="absolute right-4 top-3.5 text-sm text-zinc-400 font-mono font-bold">R$</span>
-                    </div>
-
-                    <div className="flex items-center justify-between text-[11px] text-zinc-400 pt-0.5">
-                      <span>
-                        {carProfile.fipeValue && carProfile.fipeValue > 0 
-                          ? `Valor ativo no cadastro: ${formatBRL(carProfile.fipeValue)}`
-                          : 'Nenhum valor cadastrado. Digite o valor acima e clique em "Salvar Dados do Veículo".'}
-                      </span>
-                    </div>
+                    {/* Sugestões de Modelos caso haja versões adicionais (ex: Dolphin GS, Mini, Plus) */}
+                    {fipeAlternatives.length > 1 && fipeDetails && (
+                      <div className="space-y-1.5 pt-1.5 border-t border-zinc-800/60">
+                        <span className="text-[10px] text-zinc-400 font-medium block">
+                          Ou selecione sua versão exata na base FIPE:
+                        </span>
+                        <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto pr-1">
+                          {fipeAlternatives.map((alt) => (
+                            <button
+                              key={alt.code}
+                              type="button"
+                              onClick={() => handleSelectAlternativeModel(fipeDetails.brandCode, alt.code)}
+                              className="text-[10px] px-2 py-1 bg-zinc-850 hover:bg-emerald-950/80 hover:text-emerald-300 hover:border-emerald-500/50 text-zinc-300 rounded-lg border border-zinc-750 font-medium transition-all text-left cursor-pointer"
+                            >
+                              {alt.name}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
-
-
                 </div>
               </div>
 
@@ -9652,6 +9736,7 @@ export default function App() {
           </div>
         </div>
       )}
+
 
       {/* MODAL DE INDICADORES FINANCEIROS (KPIS) */}
       {isKpisModalOpen && (
