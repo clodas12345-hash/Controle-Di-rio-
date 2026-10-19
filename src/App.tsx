@@ -13,6 +13,7 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { App as CapApp } from '@capacitor/app';
+import { fetchFipeValue } from './services/fipeService';
 import JSZip from 'jszip';
 import { 
   Car, 
@@ -112,6 +113,7 @@ interface AppEarning {
   rides: number;
   earnings: number;
   bonus: number;
+  ajuste?: number;
 }
 
 interface DailyLog {
@@ -172,6 +174,7 @@ interface CarProfile {
   insurerName: string;
   insurancePolicyNumber: string;
   nextMaintenanceKm: string;
+  fipeValue?: number;
   notes: string;
 }
 
@@ -193,6 +196,7 @@ const INITIAL_CAR_PROFILE: CarProfile = {
   insurerName: '',
   insurancePolicyNumber: '',
   nextMaintenanceKm: '10.000 KM',
+  fipeValue: 0,
   notes: ''
 };
 
@@ -214,6 +218,7 @@ export const TRULY_BLANK_CAR_PROFILE: CarProfile = {
   insurerName: '',
   insurancePolicyNumber: '',
   nextMaintenanceKm: '',
+  fipeValue: 0,
   notes: ''
 };
 
@@ -235,6 +240,7 @@ export const BLANK_CAR_PROFILE: CarProfile = {
   insurerName: '',
   insurancePolicyNumber: '',
   nextMaintenanceKm: '',
+  fipeValue: 0,
   notes: ''
 };
 
@@ -297,6 +303,16 @@ export const parseI = (val: any): number => {
   const cleaned = String(val).replace(/\D/g, '');
   const parsed = parseInt(cleaned, 10);
   return isNaN(parsed) ? 0 : parsed;
+};
+
+export const getUberTotal = (app?: { earnings?: number; bonus?: number; ajuste?: number }) => {
+  if (!app) return 0;
+  return (app.earnings || 0) + (app.bonus || 0) + (app.ajuste || 0);
+};
+
+export const get99Total = (app?: { earnings?: number; bonus?: number; ajuste?: number }) => {
+  if (!app) return 0;
+  return (app.earnings || 0) + (app.bonus || 0) + (app.ajuste || 0);
 };
 
 export const formatMoneyValue = (val: any): string => {
@@ -583,12 +599,14 @@ const sanitizeDailyLog = (l: DailyLog): DailyLog => {
     appUber: {
       rides: [1.04, 1.05, 5.8].includes(sanitizeNum(l.appUber?.earnings)) ? 0 : sanitizeNum(l.appUber?.rides),
       earnings: [1.04, 1.05, 5.8].includes(sanitizeNum(l.appUber?.earnings)) ? 0 : sanitizeNum(l.appUber?.earnings),
-      bonus: sanitizeNum(l.appUber?.bonus)
+      bonus: sanitizeNum(l.appUber?.bonus),
+      ajuste: sanitizeNum(l.appUber?.ajuste)
     },
     app99: {
       rides: [1.04, 1.05, 5.8].includes(sanitizeNum(l.app99?.earnings)) ? 0 : sanitizeNum(l.app99?.rides),
       earnings: [1.04, 1.05, 5.8].includes(sanitizeNum(l.app99?.earnings)) ? 0 : sanitizeNum(l.app99?.earnings),
-      bonus: sanitizeNum(l.app99?.bonus)
+      bonus: sanitizeNum(l.app99?.bonus),
+      ajuste: sanitizeNum(l.app99?.ajuste)
     },
     appParticular: {
       rides: [1.04, 1.05, 5.8].includes(sanitizeNum(l.appParticular?.earnings)) ? 0 : (sanitizeNum(l.appParticular?.earnings) > 0 ? sanitizeNum(l.appParticular?.rides) : 0),
@@ -731,6 +749,7 @@ export default function App() {
             insurancePolicyPdfUrl: parsed.insurancePolicyPdfUrl ?? '',
             insurancePolicyPdfName: parsed.insurancePolicyPdfName ?? '',
             nextMaintenanceKm: parsed.nextMaintenanceKm ?? DEFAULT_CAR_PROFILE.nextMaintenanceKm,
+            fipeValue: parsed.fipeValue ?? DEFAULT_CAR_PROFILE.fipeValue,
             notes: parsed.notes ?? ''
           };
         }
@@ -1272,10 +1291,12 @@ export default function App() {
   const [uRides, setURides] = useState('');
   const [uEarnings, setUEarnings] = useState('');
   const [uBonus, setUBonus] = useState('');
+  const [uAj, setUAj] = useState('');
 
   const [nRides, setNRides] = useState('');
   const [nEarnings, setNEarnings] = useState('');
   const [nBonus, setNBonus] = useState('');
+  const [nAj, setNAj] = useState('');
 
   const [pRides, setPRides] = useState('');
   const [pEarnings, setPEarnings] = useState('');
@@ -1300,6 +1321,7 @@ export default function App() {
   const uRidesInputRef = useRef<HTMLInputElement>(null);
   const uEarningsInputRef = useRef<HTMLInputElement>(null);
   const uBonusInputRef = useRef<HTMLInputElement>(null);
+  const uAjInputRef = useRef<HTMLInputElement>(null);
   const pRidesInputRef = useRef<HTMLInputElement>(null);
   const pEarningsInputRef = useRef<HTMLInputElement>(null);
 
@@ -1379,6 +1401,40 @@ export default function App() {
 
   // Car Profile State & Modal
   const [isCarModalOpen, setIsCarModalOpen] = useState(false);
+  const [isFetchingFipe, setIsFetchingFipe] = useState(false);
+  const [fipeInputStr, setFipeInputStr] = useState<string>('');
+  const [fipeStatusMessage, setFipeStatusMessage] = useState<{ text: string, type: 'error' | 'success' | 'info' } | null>(null);
+
+  useEffect(() => {
+    if (isCarModalOpen) {
+      setFipeInputStr(carProfile.fipeValue && carProfile.fipeValue > 0 ? formatMoneyValue(carProfile.fipeValue) : '');
+      setFipeStatusMessage(null);
+    }
+  }, [isCarModalOpen]);
+
+  const handleAutoFetchFipe = async () => {
+    if (!carProfile.modelName) {
+      setFipeStatusMessage({ text: 'Preencha a Marca / Modelo do carro acima antes de buscar.', type: 'error' });
+      return;
+    }
+    setIsFetchingFipe(true);
+    setFipeStatusMessage({ text: 'Consultando API pública da FIPE na internet...', type: 'info' });
+    try {
+      const res = await fetchFipeValue(carProfile.modelName, carProfile.manufactureYear);
+      if (res && res.value > 0) {
+        setCarProfile(prev => ({ ...prev, fipeValue: res.value }));
+        setFipeInputStr(formatMoneyValue(res.value));
+        setFipeStatusMessage({ text: `Cotação encontrada: ${formatBRL(res.value)} (${res.modelFullName})! Valor preenchido.`, type: 'success' });
+      } else {
+        setFipeStatusMessage({ text: `O modelo "${carProfile.modelName}" não foi localizado na base da FIPE. Digite o valor diretamente no campo abaixo.`, type: 'error' });
+      }
+    } catch (e) {
+      console.warn('Erro ao consultar FIPE:', e);
+      setFipeStatusMessage({ text: 'Não foi possível consultar a API FIPE online no momento. Digite o valor diretamente abaixo.', type: 'error' });
+    } finally {
+      setIsFetchingFipe(false);
+    }
+  };
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
   const [helpActiveTab, setHelpActiveTab] = useState<'geral' | 'guia' | 'energia' | 'diaria' | 'kpis' | 'ia' | 'faq'>('geral');
   const [helpSearchQuery, setHelpSearchQuery] = useState('');
@@ -1404,6 +1460,7 @@ export default function App() {
   const [isChartSectionOpen, setIsChartSectionOpen] = useState(false);
   const [isHistorySectionOpen, setIsHistorySectionOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<'visao-geral' | 'entradas' | 'contas' | 'relatorios'>('visao-geral');
+  const [notificationPermission, setNotificationPermission] = useState<'granted' | 'denied' | 'prompt'>('prompt');
 
   const [isKpisModalOpen, setIsKpisModalOpen] = useState(false);
   const [isEfficiencyModalOpen, setIsEfficiencyModalOpen] = useState(false);
@@ -1811,6 +1868,39 @@ export default function App() {
         backListenerHandle.remove();
       }
     };
+  }, []);
+
+  // Notificações Locais - Inicialização
+  useEffect(() => {
+    const initNotifications = async () => {
+      if (!Capacitor.isNativePlatform()) {
+        setNotificationPermission('denied');
+        return;
+      }
+      try {
+        const { LocalNotifications } = await import('@capacitor/local-notifications');
+        
+        // Solicitar permissão
+        const status = await LocalNotifications.requestPermissions();
+        setNotificationPermission(status.display);
+        
+        // Criar canal se permissão concedida
+        if (status.display === 'granted') {
+          await LocalNotifications.createChannel({
+            id: 'padrao',
+            name: 'Notificações Padrão',
+            description: 'Canal padrão de notificações',
+            importance: 5,
+            visibility: 1,
+            vibration: true
+          });
+        }
+      } catch (err) {
+        console.error('Erro ao inicializar notificações:', err);
+      }
+    };
+
+    initNotifications();
   }, []);
 
   useEffect(() => {
@@ -2904,9 +2994,6 @@ export default function App() {
       setCustoEnergia((energyConsumed * valKwhNum).toFixed(2));
       setIsEnergyCostOverridden(false);
     }
-
-    setSweepNotification(`🚗 Dados do veículo (${carProfile.modelName || 'Cadastrado'}) carregados com sucesso no lançamento!`);
-    setTimeout(() => setSweepNotification(null), 4000);
   };
 
   // Batch apply calculated daily rate to all working days of a specific month
@@ -2981,7 +3068,7 @@ export default function App() {
 
   // Batch clear car extra expenses for a specific month (e.g. phantom imported expenses)
   const handleClearMonthCarExpenses = (monthToClear: number, yearToClear: number) => {
-    const confirm = window.confirm(`Deseja zerar todas as Despesas Extras de Carro (lava-jato, pedágios, estacionamento, recarga externa e outros) do mês de ${MONTH_NAMES[monthToClear - 1]}/${yearToClear}?`);
+    const confirm = window.confirm(`Deseja zerar todas as Despesas Extras de Carro (lava-jato, pedágios, aspiração, recarga externa e outros) do mês de ${MONTH_NAMES[monthToClear - 1]}/${yearToClear}?`);
     if (!confirm) return;
 
     setLogs(prevLogs => {
@@ -3256,6 +3343,8 @@ export default function App() {
 
     setIsHistorySectionOpen(true);
     setHighlightedRowId(targetDate);
+    setSweepNotification(`🚗 Dados do veículo (${carProfile.modelName || 'Cadastrado'}) carregados com sucesso no lançamento!`);
+    setTimeout(() => setSweepNotification(null), 4000);
     setIsModalOpen(false);
   };
 
@@ -4473,7 +4562,7 @@ export default function App() {
                           className="py-3 px-3 text-right font-mono text-zinc-400"
                           title={
                             carExpensesSum > 0 
-                              ? `Detalhamento: Lava-jato: ${formatBRL(log.carExpenses?.wash || 0)} | Pedágio: ${formatBRL(log.carExpenses?.toll || 0)} | Estac.: ${formatBRL(log.carExpenses?.parking || 0)} | Recarga Ext.: ${formatBRL(log.carExpenses?.publicCharging || 0)} | Manutenção: ${formatBRL(log.carExpenses?.maintenance || 0)} | Outros: ${formatBRL(log.carExpenses?.other || 0)}`
+                              ? `Detalhamento: Lava-jato: ${formatBRL(log.carExpenses?.wash || 0)} | Pedágio: ${formatBRL(log.carExpenses?.toll || 0)} | Aspiraç.: ${formatBRL(log.carExpenses?.parking || 0)} | Recarga Ext.: ${formatBRL(log.carExpenses?.publicCharging || 0)} | Manutenção: ${formatBRL(log.carExpenses?.maintenance || 0)} | Outros: ${formatBRL(log.carExpenses?.other || 0)}`
                               : 'Sem despesas extras de carro'
                           }
                         >
@@ -5829,6 +5918,38 @@ export default function App() {
               <p className="text-xs text-zinc-400">
                 {isAllYear ? `Consolidado anual de ${selectedYear}` : `Mês de ${MONTH_NAMES[selectedMonth - 1]} de ${selectedYear}`}
               </p>
+              <div className="text-[10px] text-zinc-500 mt-1">
+                Status Permissão: {notificationPermission}
+              </div>
+              <button
+                onClick={async () => {
+                  if (!Capacitor.isNativePlatform()) {
+                    alert('Notificações locais só funcionam no aplicativo nativo (Android/iOS).');
+                    return;
+                  }
+                  try {
+                    const { LocalNotifications } = await import('@capacitor/local-notifications');
+                    await LocalNotifications.schedule({
+                      notifications: [
+                        {
+                          title: 'Teste de Notificação',
+                          body: 'Esta é uma notificação de teste.',
+                          id: 999,
+                          channelId: 'padrao',
+                          smallIcon: 'ic_stat_icon_config_sample',
+                          schedule: { at: new Date(Date.now() + 5000) }
+                        }
+                      ]
+                    });
+                    alert('Notificação agendada para daqui a 5 segundos!');
+                  } catch (e) {
+                    alert('Erro ao agendar notificação: ' + e);
+                  }
+                }}
+                className="mt-2 text-[10px] bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-1.5 rounded-lg font-bold transition-all cursor-pointer"
+              >
+                Testar notificação
+              </button>
             </div>
           </div>
 
@@ -7332,14 +7453,14 @@ export default function App() {
 
                   {isCarExpensesOpen && (
                     <div className="p-4 bg-zinc-950/80 border-t border-zinc-850 space-y-3 grid grid-cols-2 gap-3">
-                      <div className="space-y-1 col-span-2">
-                        <label className="text-[10px] text-zinc-400 font-medium">Lava-jato / Limpeza (R$)</label>
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-zinc-400 font-medium">Aspiração (R$)</label>
                         <input
                           type="text"
                           inputMode="numeric"
                           placeholder="0,00"
-                          value={wash}
-                          onChange={(e) => handleCurrencyChange(e.target.value, setWash)}
+                          value={parking}
+                          onChange={(e) => handleCurrencyChange(e.target.value, setParking)}
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
@@ -7364,14 +7485,14 @@ export default function App() {
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-zinc-400 font-medium">Estacionamento (R$)</label>
+                      <div className="space-y-1 col-span-2">
+                        <label className="text-[10px] text-zinc-400 font-medium">Lava-jato / Limpeza (R$)</label>
                         <input
                           type="text"
                           inputMode="numeric"
                           placeholder="0,00"
-                          value={parking}
-                          onChange={(e) => handleCurrencyChange(e.target.value, setParking)}
+                          value={wash}
+                          onChange={(e) => handleCurrencyChange(e.target.value, setWash)}
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
@@ -7574,6 +7695,21 @@ export default function App() {
                         placeholder="0,00"
                         value={uBonus}
                         onChange={(e) => handleCurrencyChange(e.target.value, setUBonus)}
+                        onKeyDown={(e) => handleModalInputNext(e, uAjInputRef)}
+                        className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-zinc-400">Ajuste (R$)</label>
+                      <input
+                        ref={uAjInputRef}
+                        tabIndex={26}
+                        enterKeyHint="next"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="0,00"
+                        value={uAj}
+                        onChange={(e) => handleCurrencyChange(e.target.value, setUAj)}
                         onKeyDown={(e) => handleModalInputNext(e, pRidesInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
@@ -8594,7 +8730,7 @@ export default function App() {
                       4. Refeições e Despesas Operacionais do Dia
                     </h3>
                     <p className="text-xs text-zinc-300 leading-relaxed">
-                      Registre seus gastos com <b>Almoço, Jantar e Café</b>, além de despesas do veículo no dia (<b>Lavagem, Pedágio, Estacionamento, Recarga de Rua e Manutenções Rápidas</b>). Todos os custos são abatidos para exibir o <b>Lucro Líquido Real</b> que vai para o seu bolso.
+                      Registre seus gastos com <b>Almoço, Jantar e Café</b>, além de despesas do veículo no dia (<b>Lavagem, Pedágio, Aspiração, Recarga de Rua e Manutenções Rápidas</b>). Todos os custos são abatidos para exibir o <b>Lucro Líquido Real</b> que vai para o seu bolso.
                     </p>
                   </div>
                 </div>
@@ -8998,6 +9134,95 @@ export default function App() {
                       placeholder="Ex: Preto, Branco, Cinza"
                       className="w-full bg-zinc-900 border border-zinc-700 focus:border-emerald-400 rounded-xl px-4 py-3 text-sm font-semibold text-zinc-100 outline-none transition-colors"
                     />
+                  </div>
+
+                  {/* Manual Input: Valor de Mercado (FIPE) */}
+                  <div className="sm:col-span-2 p-4 bg-zinc-950/80 border-2 border-emerald-500/40 rounded-2xl space-y-2.5">
+                    <div className="flex flex-wrap justify-between items-center gap-2">
+                      <div>
+                        <label className="text-sm font-black text-emerald-300 flex items-center gap-1.5">
+                          <DollarSign className="w-4 h-4 text-emerald-400 stroke-[2.5]" />
+                          <span>Valor de Mercado (FIPE)</span>
+                        </label>
+                        <p className="text-[11px] text-zinc-400">
+                          Preencha manualmente o valor de mercado ou da tabela FIPE do seu veículo.
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {(carProfile.fipeValue && carProfile.fipeValue > 0) || fipeInputStr ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFipeInputStr('');
+                              setCarProfile(prev => ({ ...prev, fipeValue: 0 }));
+                            }}
+                            className="text-xs bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer flex items-center gap-1"
+                            title="Apagar valor para digitar do zero"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                            <span>Limpar / Apagar</span>
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={handleAutoFetchFipe}
+                          disabled={isFetchingFipe}
+                          className="text-xs text-zinc-300 hover:text-emerald-300 bg-zinc-900 hover:bg-zinc-850 border border-zinc-700 px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer flex items-center gap-1"
+                          title="Tentar buscar cotação na API pública da FIPE"
+                        >
+                          {isFetchingFipe ? 'Consultando...' : '🔍 Buscar FIPE Auto'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {fipeStatusMessage && (
+                      <div className={`p-2.5 rounded-xl text-xs font-semibold flex items-center justify-between gap-2 transition-all ${
+                        fipeStatusMessage.type === 'error'
+                          ? 'bg-rose-950/70 border border-rose-500/50 text-rose-300'
+                          : fipeStatusMessage.type === 'success'
+                          ? 'bg-emerald-950/70 border border-emerald-500/50 text-emerald-300'
+                          : 'bg-blue-950/70 border border-blue-500/50 text-blue-300 animate-pulse'
+                      }`}>
+                        <span>{fipeStatusMessage.text}</span>
+                        <button 
+                          type="button" 
+                          onClick={() => setFipeStatusMessage(null)}
+                          className="text-zinc-400 hover:text-zinc-200 text-xs px-1.5 py-0.5 rounded cursor-pointer"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="relative">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={fipeInputStr}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setFipeInputStr(val);
+                          const parsed = parseNum(val);
+                          setCarProfile(prev => ({ ...prev, fipeValue: parsed }));
+                        }}
+                        onBlur={() => {
+                          if (carProfile.fipeValue && carProfile.fipeValue > 0) {
+                            setFipeInputStr(formatMoneyValue(carProfile.fipeValue));
+                          }
+                        }}
+                        placeholder="Ex: 85.000,00 ou digite o valor"
+                        className="w-full bg-zinc-900 border-2 border-zinc-700 focus:border-emerald-400 rounded-xl px-4 py-3.5 text-base sm:text-lg font-bold font-mono text-emerald-300 outline-none transition-colors pr-12 shadow-inner"
+                      />
+                      <span className="absolute right-4 top-3.5 text-sm text-zinc-400 font-mono font-bold">R$</span>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[11px] text-zinc-400 pt-0.5">
+                      <span>
+                        {carProfile.fipeValue && carProfile.fipeValue > 0 
+                          ? `Valor ativo no cadastro: ${formatBRL(carProfile.fipeValue)}`
+                          : 'Nenhum valor cadastrado. Digite o valor acima e clique em "Salvar Dados do Veículo".'}
+                      </span>
+                    </div>
                   </div>
 
 

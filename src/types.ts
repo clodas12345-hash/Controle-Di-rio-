@@ -18,6 +18,7 @@ export interface AppEarning {
   rides: number;
   earnings: number;
   bonus: number;
+  ajuste?: number;
 }
 
 export interface DailyLog {
@@ -82,5 +83,6 @@ export interface CarProfile {
   nextMaintenanceKm?: string;
   maintenanceIntervalKm?: number;
   maintenanceAlertThresholdKm?: number;
+  fipeValue?: number;
   notes?: string;
 }

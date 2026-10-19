@@ -349,7 +349,7 @@ export function detectCellConflicts(
   checkNumericField('carExpenses_wash', 'Lavagem do Carro', 'despesas', existingLog.carExpenses?.wash, extracted.carExpenses_wash);
   checkNumericField('carExpenses_toll', 'Pedágios', 'despesas', existingLog.carExpenses?.toll, extracted.carExpenses_toll);
   checkNumericField('carExpenses_maintenance', 'Manutenção', 'despesas', existingLog.carExpenses?.maintenance, extracted.carExpenses_maintenance);
-  checkNumericField('carExpenses_parking', 'Estacionamento', 'despesas', existingLog.carExpenses?.parking, extracted.carExpenses_parking);
+  checkNumericField('carExpenses_parking', 'Aspiração', 'despesas', existingLog.carExpenses?.parking, extracted.carExpenses_parking);
 
   // Despesas Alimentação
   checkNumericField('foodExpenses_lunch', 'Almoço / Refeição', 'alimentacao', existingLog.foodExpenses?.lunch, extracted.foodExpenses_lunch);
