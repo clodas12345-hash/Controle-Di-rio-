@@ -59,7 +59,7 @@ export async function sendAppNotification(title: string, options?: { body?: stri
 
     // 2. Notificação Web / PWA no navegador
     if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-      const iconUrl = options?.icon || '/icon2.png';
+      const iconUrl = options?.icon || '/icon.png';
       new Notification(title, {
         body: options?.body || '',
         icon: iconUrl,
