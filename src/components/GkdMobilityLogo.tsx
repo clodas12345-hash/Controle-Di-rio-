@@ -30,7 +30,7 @@ export const GkdMobilityLogo: React.FC<GkdMobilityLogoProps> = ({
           alt="Controle Diário - GKD Mobility"
           referrerPolicy="no-referrer"
           onError={() => setImgError(true)}
-          className="w-full h-full object-cover drop-shadow-sm transition-transform duration-200 hover:scale-105"
+          className="w-full h-full object-contain p-1 drop-shadow-sm transition-transform duration-200 hover:scale-105"
         />
       ) : (
         <div className="w-full h-full bg-emerald-500/10 border border-emerald-500/30 rounded-xl flex items-center justify-center text-emerald-400 font-black text-xs">
