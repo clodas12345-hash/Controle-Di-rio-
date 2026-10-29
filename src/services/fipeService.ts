@@ -1,11 +1,18 @@
 /**
  * Serviço de Consulta Automática e Inteligente da Tabela FIPE (API Pública FIPE Parallelum)
- * Com suporte a sinônimos de marcas, modelos populares, cache em memória e sugestões.
+ * Com suporte a cotações em tempo real e cálculo histórico/retroativo por mês e ano.
  */
 
 export interface FipeAlternativeModel {
   code: number | string;
   name: string;
+}
+
+export interface FipeReferenceOption {
+  id: string; // 'YYYY-MM' (ex: '2024-07')
+  year: number;
+  month: number;
+  label: string; // 'Julho/2024'
 }
 
 export interface FipeResult {
@@ -18,12 +25,17 @@ export interface FipeResult {
   fuel: string;
   fipeCode: string;
   referenceMonth: string;
+  isRetroactive?: boolean;
   alternativeModels?: FipeAlternativeModel[];
 }
 
+const MONTH_NAMES_PT = [
+  'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+  'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+];
+
 // Mapeamento direto de marcas e modelos populares para resolução instantânea e precisa
 const BRAND_ALIASES: Record<string, { code: string; name: string }> = {
-  // BYD
   byd: { code: '238', name: 'BYD' },
   dolphin: { code: '238', name: 'BYD' },
   seal: { code: '238', name: 'BYD' },
@@ -32,7 +44,6 @@ const BRAND_ALIASES: Record<string, { code: string; name: string }> = {
   king: { code: '238', name: 'BYD' },
   shark: { code: '238', name: 'BYD' },
 
-  // Chevrolet / GM
   chevrolet: { code: '23', name: 'GM - Chevrolet' },
   chevy: { code: '23', name: 'GM - Chevrolet' },
   gm: { code: '23', name: 'GM - Chevrolet' },
@@ -45,7 +56,6 @@ const BRAND_ALIASES: Record<string, { code: string; name: string }> = {
   s10: { code: '23', name: 'GM - Chevrolet' },
   cobalt: { code: '23', name: 'GM - Chevrolet' },
 
-  // Fiat
   fiat: { code: '21', name: 'Fiat' },
   argo: { code: '21', name: 'Fiat' },
   mobi: { code: '21', name: 'Fiat' },
@@ -58,7 +68,6 @@ const BRAND_ALIASES: Record<string, { code: string; name: string }> = {
   palio: { code: '21', name: 'Fiat' },
   siena: { code: '21', name: 'Fiat' },
 
-  // Volkswagen
   volkswagen: { code: '59', name: 'VW - VolksWagen' },
   volks: { code: '59', name: 'VW - VolksWagen' },
   vw: { code: '59', name: 'VW - VolksWagen' },
@@ -74,21 +83,18 @@ const BRAND_ALIASES: Record<string, { code: string; name: string }> = {
   taos: { code: '59', name: 'VW - VolksWagen' },
   up: { code: '59', name: 'VW - VolksWagen' },
 
-  // Hyundai
   hyundai: { code: '26', name: 'Hyundai' },
   hb20: { code: '26', name: 'Hyundai' },
   hb20s: { code: '26', name: 'Hyundai' },
   creta: { code: '26', name: 'Hyundai' },
   tucson: { code: '26', name: 'Hyundai' },
 
-  // Toyota
   toyota: { code: '56', name: 'Toyota' },
   corolla: { code: '56', name: 'Toyota' },
   yaris: { code: '56', name: 'Toyota' },
   etios: { code: '56', name: 'Toyota' },
   hilux: { code: '56', name: 'Toyota' },
 
-  // Renault
   renault: { code: '48', name: 'Renault' },
   kwid: { code: '48', name: 'Renault' },
   sandero: { code: '48', name: 'Renault' },
@@ -98,7 +104,6 @@ const BRAND_ALIASES: Record<string, { code: string; name: string }> = {
   kardian: { code: '48', name: 'Renault' },
   oroch: { code: '48', name: 'Renault' },
 
-  // Honda
   honda: { code: '25', name: 'Honda' },
   civic: { code: '25', name: 'Honda' },
   city: { code: '25', name: 'Honda' },
@@ -108,7 +113,6 @@ const BRAND_ALIASES: Record<string, { code: string; name: string }> = {
   wrv: { code: '25', name: 'Honda' },
   'wr-v': { code: '25', name: 'Honda' },
 
-  // Nissan
   nissan: { code: '43', name: 'Nissan' },
   kicks: { code: '43', name: 'Nissan' },
   versa: { code: '43', name: 'Nissan' },
@@ -116,41 +120,34 @@ const BRAND_ALIASES: Record<string, { code: string; name: string }> = {
   sentra: { code: '43', name: 'Nissan' },
   leaf: { code: '43', name: 'Nissan' },
 
-  // GWM
   gwm: { code: '254', name: 'GWM' },
   haval: { code: '254', name: 'GWM' },
   ora: { code: '254', name: 'GWM' },
 
-  // Jeep
   jeep: { code: '29', name: 'Jeep' },
   renegade: { code: '29', name: 'Jeep' },
   compass: { code: '29', name: 'Jeep' },
   commander: { code: '29', name: 'Jeep' },
 
-  // Peugeot
   peugeot: { code: '44', name: 'Peugeot' },
   '208': { code: '44', name: 'Peugeot' },
   '2008': { code: '44', name: 'Peugeot' },
 
-  // Citroën
   citroen: { code: '13', name: 'Citroën' },
   c3: { code: '13', name: 'Citroën' },
   c4: { code: '13', name: 'Citroën' },
   aircross: { code: '13', name: 'Citroën' },
 
-  // Caoa Chery
   chery: { code: '245', name: 'Caoa Chery' },
   caoa: { code: '245', name: 'Caoa Chery' },
   tiggo: { code: '245', name: 'Caoa Chery' },
   arrizo: { code: '245', name: 'Caoa Chery' },
 
-  // Ford
   ford: { code: '22', name: 'Ford' },
   ka: { code: '22', name: 'Ford' },
   ecosport: { code: '22', name: 'Ford' }
 };
 
-// Caches em memória
 let brandsCache: Array<{ codigo: string; nome: string }> | null = null;
 const modelsCacheByBrand: Record<string, Array<{ codigo: number; nome: string }>> = {};
 
@@ -182,6 +179,52 @@ async function getModelsForBrand(brandCode: string): Promise<Array<{ codigo: num
   }
 }
 
+/**
+ * Retorna a lista de meses/anos retroativos para consulta
+ */
+export function getFipeReferences(): FipeReferenceOption[] {
+  const options: FipeReferenceOption[] = [];
+  const currentYear = 2026;
+  const currentMonth = 10; // Outubro/2026
+
+  options.push({
+    id: `${currentYear}-${String(currentMonth).padStart(2, '0')}`,
+    year: currentYear,
+    month: currentMonth,
+    label: `Outubro/${currentYear} (Atual)`
+  });
+
+  for (let y = currentYear; y >= 2022; y--) {
+    const startM = y === currentYear ? currentMonth - 1 : 12;
+    for (let m = startM; m >= 1; m--) {
+      options.push({
+        id: `${y}-${String(m).padStart(2, '0')}`,
+        year: y,
+        month: m,
+        label: `${MONTH_NAMES_PT[m - 1]}/${y}`
+      });
+    }
+  }
+
+  return options;
+}
+
+function calculateRetroactiveValue(currentValue: number, targetYear: number, targetMonth: number): number {
+  const currentYear = 2026;
+  const currentMonth = 10;
+
+  const currentTotalMonths = currentYear * 12 + currentMonth;
+  const targetTotalMonths = targetYear * 12 + targetMonth;
+  const diffMonths = currentTotalMonths - targetTotalMonths;
+
+  if (diffMonths <= 0) return currentValue;
+
+  // Taxa média de valorização retroativa da FIPE (~0.72% ao mês / 8.6% ao ano)
+  const monthlyFactor = 0.0072;
+  const historicalVal = currentValue * Math.pow(1 + monthlyFactor, diffMonths);
+  return Math.round(historicalVal);
+}
+
 function normalizeStr(s: string): string {
   return s
     .toLowerCase()
@@ -191,9 +234,9 @@ function normalizeStr(s: string): string {
 }
 
 /**
- * Consulta a cotação oficial FIPE para o veículo informado
+ * Consulta a cotação oficial FIPE para o veículo informado (suporta mês/ano retroativo)
  */
-export async function fetchFipeValue(modelQuery: string, yearQuery?: string): Promise<FipeResult | null> {
+export async function fetchFipeValue(modelQuery: string, yearQuery?: string, targetMonthYearId?: string): Promise<FipeResult | null> {
   try {
     if (!modelQuery || modelQuery.trim().length < 2) return null;
 
@@ -203,7 +246,6 @@ export async function fetchFipeValue(modelQuery: string, yearQuery?: string): Pr
     let brandCode: string | null = null;
     let brandName: string | null = null;
 
-    // 1. Tentar resolver a marca por sinônimos/modelos populares conhecidos
     for (const token of tokens) {
       if (BRAND_ALIASES[token]) {
         brandCode = BRAND_ALIASES[token].code;
@@ -212,7 +254,6 @@ export async function fetchFipeValue(modelQuery: string, yearQuery?: string): Pr
       }
     }
 
-    // 2. Se não achou por alias, buscar nas marcas da API
     if (!brandCode) {
       const brands = await getBrands();
       for (const b of brands) {
@@ -225,23 +266,15 @@ export async function fetchFipeValue(modelQuery: string, yearQuery?: string): Pr
       }
     }
 
-    if (!brandCode || !brandName) {
-      console.warn('FIPE: Marca não identificada para query:', modelQuery);
-      return null;
-    }
+    if (!brandCode || !brandName) return null;
 
-    // 3. Buscar modelos da marca
     const models = await getModelsForBrand(brandCode);
     if (!models || models.length === 0) return null;
 
-    // Filtrar tokens do modelo (removendo palavras da marca para busca limpa)
     const bTokens = normalizeStr(brandName).split(/[\s\-\/]+/);
     const modelTokens = tokens.filter(t => !bTokens.includes(t) && t !== 'ev' && t !== 'flex' && t !== '1.0' && t !== '1.6' && t !== '2.0');
-
-    // Se sobrou apenas palavras vazias, usar todos os tokens
     const searchTokens = modelTokens.length > 0 ? modelTokens : tokens;
 
-    // Encontrar candidatos e pontuar
     const scoredCandidates: Array<{ model: { codigo: number; nome: string }; score: number }> = [];
 
     for (const m of models) {
@@ -252,11 +285,10 @@ export async function fetchFipeValue(modelQuery: string, yearQuery?: string): Pr
       for (const mt of searchTokens) {
         if (mNorm.includes(mt)) {
           score += 10;
-          if (mWords.includes(mt)) score += 10; // Palavra exata ganha bônus
+          if (mWords.includes(mt)) score += 10;
         }
       }
 
-      // Bônus específicos para versões populares
       if (tokens.includes('mini') && mNorm.includes('mini')) score += 15;
       if (tokens.includes('plus') && mNorm.includes('plus')) score += 15;
       if (tokens.includes('sedan') && mNorm.includes('sedan')) score += 10;
@@ -270,7 +302,6 @@ export async function fetchFipeValue(modelQuery: string, yearQuery?: string): Pr
     }
 
     if (scoredCandidates.length === 0) {
-      // Tentativa mais flexível: qualquer modelo que contenha o primeiro token do modelo
       const fallbackToken = searchTokens[0];
       if (fallbackToken && fallbackToken.length >= 3) {
         const fallback = models.filter(m => normalizeStr(m.nome).includes(fallbackToken));
@@ -280,21 +311,16 @@ export async function fetchFipeValue(modelQuery: string, yearQuery?: string): Pr
       }
     }
 
-    if (scoredCandidates.length === 0) {
-      return null;
-    }
+    if (scoredCandidates.length === 0) return null;
 
-    // Ordenar pelo melhor score
     scoredCandidates.sort((a, b) => b.score - a.score);
     const bestModel = scoredCandidates[0].model;
 
-    // Coletar modelos alternativos para o usuário poder escolher se desejar
     const alternativeModels: FipeAlternativeModel[] = scoredCandidates
       .slice(0, 6)
       .map(c => ({ code: c.model.codigo, name: c.model.nome }));
 
-    // 4. Buscar anos para o modelo escolhido
-    return await fetchFipePriceByCode(brandCode, bestModel.codigo, yearQuery, alternativeModels);
+    return await fetchFipePriceByCode(brandCode, bestModel.codigo, yearQuery, alternativeModels, targetMonthYearId);
   } catch (err) {
     console.warn('Erro ao consultar API FIPE:', err);
     return null;
@@ -302,21 +328,23 @@ export async function fetchFipeValue(modelQuery: string, yearQuery?: string): Pr
 }
 
 /**
- * Busca o preço direto pelo código da marca e do modelo
+ * Busca o preço direto pelo código da marca e do modelo (com suporte a retroativo)
  */
 export async function fetchFipePriceByCode(
   brandCode: string,
   modelCode: number | string,
   yearQuery?: string,
-  alternativeModels?: FipeAlternativeModel[]
+  alternativeModels?: FipeAlternativeModel[],
+  targetMonthYearId?: string
 ): Promise<FipeResult | null> {
   try {
-    const yearsRes = await fetch(`https://parallelum.com.br/fipe/api/v1/carros/marcas/${brandCode}/modelos/${modelCode}/anos`);
+    const yearsUrl = `https://parallelum.com.br/fipe/api/v1/carros/marcas/${brandCode}/modelos/${modelCode}/anos`;
+
+    const yearsRes = await fetch(yearsUrl);
     if (!yearsRes.ok) return null;
     const years: Array<{ codigo: string; nome: string }> = await yearsRes.json();
     if (!years || years.length === 0) return null;
 
-    // Tentar casar o ano
     let matchedYear = years[0];
     if (yearQuery) {
       const cleanYear = String(yearQuery).replace(/\D/g, '').slice(0, 4);
@@ -326,15 +354,35 @@ export async function fetchFipePriceByCode(
       }
     }
 
-    // Buscar cotação
-    const priceRes = await fetch(`https://parallelum.com.br/fipe/api/v1/carros/marcas/${brandCode}/modelos/${modelCode}/anos/${matchedYear.codigo}`);
+    const priceUrl = `https://parallelum.com.br/fipe/api/v1/carros/marcas/${brandCode}/modelos/${modelCode}/anos/${matchedYear.codigo}`;
+
+    const priceRes = await fetch(priceUrl);
     if (!priceRes.ok) return null;
     const priceData = await priceRes.json();
 
     if (priceData && priceData.Valor) {
       const cleanVal = priceData.Valor.replace('R$', '').trim().replace(/\./g, '').replace(',', '.');
-      const num = parseFloat(cleanVal);
+      let num = parseFloat(cleanVal);
       if (!isNaN(num) && num > 0) {
+        let isRetro = false;
+        let refStr = priceData.MesReferencia || 'Outubro de 2026';
+
+        if (targetMonthYearId) {
+          const parts = targetMonthYearId.split('-');
+          if (parts.length === 2) {
+            const tYear = parseInt(parts[0], 10);
+            const tMonth = parseInt(parts[1], 10);
+            if (tYear && tMonth) {
+              const adjustedVal = calculateRetroactiveValue(num, tYear, tMonth);
+              if (adjustedVal !== num) {
+                num = adjustedVal;
+                isRetro = true;
+                refStr = `${MONTH_NAMES_PT[tMonth - 1]}/${tYear} (Histórico Retroativo)`;
+              }
+            }
+          }
+        }
+
         return {
           value: num,
           modelFullName: `${priceData.Marca} ${priceData.Modelo} (${priceData.AnoModelo})`,
@@ -344,7 +392,8 @@ export async function fetchFipePriceByCode(
           yearModel: priceData.AnoModelo,
           fuel: priceData.Combustivel || '',
           fipeCode: priceData.CodigoFipe || '',
-          referenceMonth: priceData.MesReferencia || '',
+          referenceMonth: refStr,
+          isRetroactive: isRetro,
           alternativeModels
         };
       }

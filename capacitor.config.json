@@ -14,8 +14,8 @@
       "enabled": true
     },
     "LocalNotifications": {
-      "smallIcon": "icon",
-      "iconColor": "#34d399",
+      "smallIcon": "ic_stat_icon",
+      "iconColor": "#10b981",
       "sound": "default"
     }
   }

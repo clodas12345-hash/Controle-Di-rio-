@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import appLogo from '../assets/icon2.png';
+import appLogo from '../assets/logo.png';
 
 interface GkdMobilityLogoProps {
   className?: string;
@@ -27,7 +27,7 @@ export const GkdMobilityLogo: React.FC<GkdMobilityLogoProps> = ({
       {!imgError ? (
         <img
           src={appLogo}
-          alt="GKD Mobility Logo Oficial"
+          alt="Controle Diário - GKD Mobility"
           referrerPolicy="no-referrer"
           onError={() => setImgError(true)}
           className="w-full h-full object-cover drop-shadow-sm transition-transform duration-200 hover:scale-105"

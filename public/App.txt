@@ -13,7 +13,7 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { App as CapApp } from '@capacitor/app';
-import { fetchFipeValue } from './services/fipeService';
+import { fetchFipeValue, fetchFipePriceByCode, getFipeReferences, FipeAlternativeModel, FipeReferenceOption } from './services/fipeService';
 import JSZip from 'jszip';
 import { 
   Car, 
@@ -113,6 +113,7 @@ interface AppEarning {
   rides: number;
   earnings: number;
   bonus: number;
+  ajuste?: number;
 }
 
 interface DailyLog {
@@ -287,11 +288,29 @@ export const parseNum = (val: any): number => {
   if (!val) return 0;
   let s = String(val).trim();
   if (!s) return 0;
-  if (s.includes(',') && s.includes('.')) {
-    s = s.replace(/\./g, '').replace(',', '.');
-  } else if (s.includes(',')) {
-    s = s.replace(',', '.');
+
+  // Se a string tem múltiplos pontos (ex: "1.280.00"), remove todos os pontos antes do último
+  const dotCount = (s.match(/\./g) || []).length;
+  if (dotCount > 1) {
+    const lastDotIndex = s.lastIndexOf('.');
+    s = s.substring(0, lastDotIndex).replace(/\./g, '') + s.substring(lastDotIndex);
   }
+
+  if (s.includes(',') && s.includes('.')) {
+    if (s.indexOf('.') < s.indexOf(',')) {
+      s = s.replace(/\./g, '').replace(',', '.');
+    } else {
+      s = s.replace(/,/g, '');
+    }
+  } else if (s.includes(',')) {
+    s = s.replace(/\./g, '').replace(',', '.');
+  } else if (s.includes('.')) {
+    const parts = s.split('.');
+    if (parts.length === 2 && parts[1].length === 3) {
+      s = s.replace(/\./g, '');
+    }
+  }
+
   const parsed = parseFloat(s);
   return isNaN(parsed) ? 0 : Math.round(parsed * 100) / 100;
 };
@@ -302,6 +321,16 @@ export const parseI = (val: any): number => {
   const cleaned = String(val).replace(/\D/g, '');
   const parsed = parseInt(cleaned, 10);
   return isNaN(parsed) ? 0 : parsed;
+};
+
+export const getUberTotal = (app?: { earnings?: number; bonus?: number; ajuste?: number }) => {
+  if (!app) return 0;
+  return (app.earnings || 0) + (app.bonus || 0) + (app.ajuste || 0);
+};
+
+export const get99Total = (app?: { earnings?: number; bonus?: number; ajuste?: number }) => {
+  if (!app) return 0;
+  return (app.earnings || 0) + (app.bonus || 0) + (app.ajuste || 0);
 };
 
 export const formatMoneyValue = (val: any): string => {
@@ -319,7 +348,11 @@ export const formatMoneyValue = (val: any): string => {
 };
 
 export const handleCurrencyChange = (rawInput: string, setter: (val: string) => void) => {
-  const digits = rawInput.replace(/\D/g, '');
+  if (rawInput === undefined || rawInput === null) {
+    setter('');
+    return;
+  }
+  const digits = String(rawInput).replace(/\D/g, '');
   if (!digits || parseInt(digits, 10) === 0) {
     setter('');
     return;
@@ -547,14 +580,15 @@ const getPreloadedLogs = (year: number, month: number): DailyLog[] => {
 
 const sanitizeDailyLog = (l: DailyLog): DailyLog => {
   const sanitizeNum = (v: any) => {
-    if (typeof v === 'string') v = parseFloat(v.replace(',', '.'));
-    return (typeof v === 'number' && !Number.isNaN(v) && Number.isFinite(v) ? Math.round(v * 100) / 100 : 0);
+    if (typeof v === 'number') return isNaN(v) ? 0 : Math.round(v * 100) / 100;
+    return parseNum(v);
   };
 
   const sanitizeNumOrNull = (v: any) => {
     if (v === undefined || v === null || v === '' || v === -1) return null;
-    if (typeof v === 'string') v = parseFloat(v.replace(',', '.'));
-    return (typeof v === 'number' && !Number.isNaN(v) && Number.isFinite(v) ? Math.round(v * 100) / 100 : null);
+    if (typeof v === 'number') return isNaN(v) ? null : Math.round(v * 100) / 100;
+    const p = parseNum(v);
+    return p > 0 ? p : null;
   };
   
   const dateStr = l.date || '';
@@ -588,12 +622,14 @@ const sanitizeDailyLog = (l: DailyLog): DailyLog => {
     appUber: {
       rides: [1.04, 1.05, 5.8].includes(sanitizeNum(l.appUber?.earnings)) ? 0 : sanitizeNum(l.appUber?.rides),
       earnings: [1.04, 1.05, 5.8].includes(sanitizeNum(l.appUber?.earnings)) ? 0 : sanitizeNum(l.appUber?.earnings),
-      bonus: sanitizeNum(l.appUber?.bonus)
+      bonus: sanitizeNum(l.appUber?.bonus),
+      ajuste: sanitizeNum(l.appUber?.ajuste)
     },
     app99: {
       rides: [1.04, 1.05, 5.8].includes(sanitizeNum(l.app99?.earnings)) ? 0 : sanitizeNum(l.app99?.rides),
       earnings: [1.04, 1.05, 5.8].includes(sanitizeNum(l.app99?.earnings)) ? 0 : sanitizeNum(l.app99?.earnings),
-      bonus: sanitizeNum(l.app99?.bonus)
+      bonus: sanitizeNum(l.app99?.bonus),
+      ajuste: sanitizeNum(l.app99?.ajuste)
     },
     appParticular: {
       rides: [1.04, 1.05, 5.8].includes(sanitizeNum(l.appParticular?.earnings)) ? 0 : (sanitizeNum(l.appParticular?.earnings) > 0 ? sanitizeNum(l.appParticular?.rides) : 0),
@@ -1236,6 +1272,7 @@ export default function App() {
   const [prevDayPromptInfo, setPrevDayPromptInfo] = useState<{ prevDateStr: string; formDate: string } | null>(null);
   const [confirmHighKmPrompt, setConfirmHighKmPrompt] = useState(false);
   const [highKmTargetDate, setHighKmTargetDate] = useState<string>('');
+  const [customManualDeductKm, setCustomManualDeductKm] = useState<string>('');
   const [confirmBatteryEstimatePrompt, setConfirmBatteryEstimatePrompt] = useState(false);
   const [batteryEstimateInfo, setBatteryEstimateInfo] = useState<{
     km: number;
@@ -1278,10 +1315,12 @@ export default function App() {
   const [uRides, setURides] = useState('');
   const [uEarnings, setUEarnings] = useState('');
   const [uBonus, setUBonus] = useState('');
+  const [uAj, setUAj] = useState('');
 
   const [nRides, setNRides] = useState('');
   const [nEarnings, setNEarnings] = useState('');
   const [nBonus, setNBonus] = useState('');
+  const [nAj, setNAj] = useState('');
 
   const [pRides, setPRides] = useState('');
   const [pEarnings, setPEarnings] = useState('');
@@ -1306,6 +1345,7 @@ export default function App() {
   const uRidesInputRef = useRef<HTMLInputElement>(null);
   const uEarningsInputRef = useRef<HTMLInputElement>(null);
   const uBonusInputRef = useRef<HTMLInputElement>(null);
+  const uAjInputRef = useRef<HTMLInputElement>(null);
   const pRidesInputRef = useRef<HTMLInputElement>(null);
   const pEarningsInputRef = useRef<HTMLInputElement>(null);
 
@@ -1388,37 +1428,154 @@ export default function App() {
   const [isFetchingFipe, setIsFetchingFipe] = useState(false);
   const [fipeInputStr, setFipeInputStr] = useState<string>('');
   const [fipeStatusMessage, setFipeStatusMessage] = useState<{ text: string, type: 'error' | 'success' | 'info' } | null>(null);
+  const [fipeAlternatives, setFipeAlternatives] = useState<FipeAlternativeModel[]>([]);
+  const [fipeDetails, setFipeDetails] = useState<{ brandCode: string; modelFullName: string; refMonth: string; fipeCode: string } | null>(null);
+
+  const handleAutoFetchFipe = async (overrideModel?: string, overrideYear?: string) => {
+    const modelToSearch = overrideModel !== undefined ? overrideModel : carProfile.modelName;
+    const yearToSearch = overrideYear !== undefined ? overrideYear : carProfile.manufactureYear;
+
+    if (!modelToSearch || modelToSearch.trim().length < 2) {
+      setFipeStatusMessage({ text: 'Preencha a Marca ou Modelo do veículo para consultar a FIPE.', type: 'info' });
+      return;
+    }
+
+    setIsFetchingFipe(true);
+    setFipeStatusMessage({ text: 'Consultando API oficial FIPE...', type: 'info' });
+    try {
+      const res = await fetchFipeValue(modelToSearch, yearToSearch);
+      if (res && res.value > 0) {
+        setCarProfile(prev => ({ ...prev, fipeValue: res.value }));
+        setFipeInputStr(formatMoneyValue(res.value));
+        setFipeDetails({
+          brandCode: res.brandCode,
+          modelFullName: res.modelFullName,
+          refMonth: res.referenceMonth,
+          fipeCode: res.fipeCode
+        });
+        if (res.alternativeModels && res.alternativeModels.length > 1) {
+          setFipeAlternatives(res.alternativeModels);
+        } else {
+          setFipeAlternatives([]);
+        }
+        setFipeStatusMessage({ 
+          text: `✓ Cotação: ${formatBRL(res.value)} (${res.modelFullName})${res.referenceMonth ? ` • Ref: ${res.referenceMonth}` : ''}`, 
+          type: 'success' 
+        });
+      } else {
+        setFipeStatusMessage({ 
+          text: `O modelo "${modelToSearch}" não foi localizado na base FIPE. Digite o valor manualmente.`, 
+          type: 'error' 
+        });
+        setFipeAlternatives([]);
+      }
+    } catch (e) {
+      console.warn('Erro ao consultar FIPE:', e);
+      setFipeStatusMessage({ text: 'Não foi possível consultar a API FIPE no momento. Digite o valor diretamente abaixo.', type: 'error' });
+    } finally {
+      setIsFetchingFipe(false);
+    }
+  };
+
+  const handleSelectAlternativeModel = async (brandCode: string, modelCode: string | number) => {
+    setIsFetchingFipe(true);
+    setFipeStatusMessage({ text: 'Atualizando cotação para o modelo selecionado...', type: 'info' });
+    try {
+      const res = await fetchFipePriceByCode(brandCode, modelCode, carProfile.manufactureYear, undefined, selectedFipeRefId);
+      if (res && res.value > 0) {
+        setCarProfile(prev => ({ ...prev, fipeValue: res.value }));
+        setFipeInputStr(formatMoneyValue(res.value));
+        setFipeDetails({
+          brandCode: res.brandCode,
+          modelFullName: res.modelFullName,
+          refMonth: res.referenceMonth,
+          fipeCode: res.fipeCode
+        });
+        setFipeStatusMessage({ 
+          text: `✓ Cotação: ${formatBRL(res.value)} (${res.modelFullName})`, 
+          type: 'success' 
+        });
+      }
+    } catch (err) {
+      console.warn('Erro ao selecionar modelo FIPE alternativo:', err);
+    } finally {
+      setIsFetchingFipe(false);
+    }
+  };
+
+  const [fipeReferences, setFipeReferences] = useState<FipeReferenceOption[]>([]);
+  const [selectedFipeRefId, setSelectedFipeRefId] = useState<string>('');
+
+  useEffect(() => {
+    const refs = getFipeReferences();
+    setFipeReferences(refs);
+  }, []);
+
+  const handleHistoricalFipeFetch = async (targetId: string) => {
+    setSelectedFipeRefId(targetId);
+    if (!targetId) {
+      handleAutoFetchFipe();
+      return;
+    }
+
+    const modelToSearch = carProfile.modelName;
+    const yearToSearch = carProfile.manufactureYear;
+
+    if (!modelToSearch || modelToSearch.trim().length < 2) {
+      setFipeStatusMessage({ text: 'Preencha a Marca ou Modelo do veículo antes de buscar por mês retroativo.', type: 'info' });
+      return;
+    }
+
+    setIsFetchingFipe(true);
+    const refItem = fipeReferences.find(r => r.id === targetId);
+    setFipeStatusMessage({ text: `Consultando cotação FIPE para ${refItem ? refItem.label : targetId}...`, type: 'info' });
+
+    try {
+      const res = await fetchFipeValue(modelToSearch, yearToSearch, targetId);
+      if (res && res.value > 0) {
+        setCarProfile(prev => ({ ...prev, fipeValue: res.value }));
+        setFipeInputStr(formatMoneyValue(res.value));
+        setFipeDetails({
+          brandCode: res.brandCode,
+          modelFullName: res.modelFullName,
+          refMonth: res.referenceMonth,
+          fipeCode: res.fipeCode
+        });
+        if (res.alternativeModels && res.alternativeModels.length > 1) {
+          setFipeAlternatives(res.alternativeModels);
+        } else {
+          setFipeAlternatives([]);
+        }
+        setFipeStatusMessage({ 
+          text: `✓ Cotação (${res.referenceMonth}): ${formatBRL(res.value)} (${res.modelFullName})`, 
+          type: 'success' 
+        });
+      } else {
+        setFipeStatusMessage({ 
+          text: `Não foi encontrada cotação para "${modelToSearch}" no mês ${refItem ? refItem.label : targetId}.`, 
+          type: 'error' 
+        });
+      }
+    } catch (e) {
+      console.warn('Erro ao consultar FIPE retroativa:', e);
+      setFipeStatusMessage({ text: 'Erro ao consultar cotação FIPE retroativa.', type: 'error' });
+    } finally {
+      setIsFetchingFipe(false);
+    }
+  };
 
   useEffect(() => {
     if (isCarModalOpen) {
       setFipeInputStr(carProfile.fipeValue && carProfile.fipeValue > 0 ? formatMoneyValue(carProfile.fipeValue) : '');
       setFipeStatusMessage(null);
+      setFipeAlternatives([]);
+      
+      // Busca automática se tiver nome do carro e valor ainda não definido
+      if (carProfile.modelName && carProfile.modelName.trim().length >= 2 && (!carProfile.fipeValue || carProfile.fipeValue === 0)) {
+        handleAutoFetchFipe(carProfile.modelName, carProfile.manufactureYear);
+      }
     }
   }, [isCarModalOpen]);
-
-  const handleAutoFetchFipe = async () => {
-    if (!carProfile.modelName) {
-      setFipeStatusMessage({ text: 'Preencha a Marca / Modelo do carro acima antes de buscar.', type: 'error' });
-      return;
-    }
-    setIsFetchingFipe(true);
-    setFipeStatusMessage({ text: 'Consultando API pública da FIPE na internet...', type: 'info' });
-    try {
-      const res = await fetchFipeValue(carProfile.modelName, carProfile.manufactureYear);
-      if (res && res.value > 0) {
-        setCarProfile(prev => ({ ...prev, fipeValue: res.value }));
-        setFipeInputStr(formatMoneyValue(res.value));
-        setFipeStatusMessage({ text: `Cotação encontrada: ${formatBRL(res.value)} (${res.modelFullName})! Valor preenchido.`, type: 'success' });
-      } else {
-        setFipeStatusMessage({ text: `O modelo "${carProfile.modelName}" não foi localizado na base da FIPE. Digite o valor diretamente no campo abaixo.`, type: 'error' });
-      }
-    } catch (e) {
-      console.warn('Erro ao consultar FIPE:', e);
-      setFipeStatusMessage({ text: 'Não foi possível consultar a API FIPE online no momento. Digite o valor diretamente abaixo.', type: 'error' });
-    } finally {
-      setIsFetchingFipe(false);
-    }
-  };
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
   const [helpActiveTab, setHelpActiveTab] = useState<'geral' | 'guia' | 'energia' | 'diaria' | 'kpis' | 'ia' | 'faq'>('geral');
   const [helpSearchQuery, setHelpSearchQuery] = useState('');
@@ -2068,6 +2225,17 @@ export default function App() {
     const sanitized = sanitizeFixedExpensesMap(fixedExpensesByMonth);
     localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify(sanitized));
   }, [fixedExpensesByMonth]);
+
+  useEffect(() => {
+    if ((window as any).isClearingAll) return;
+    if (logs && logs.length > 0) {
+      try {
+        localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(logs));
+      } catch (e) {
+        console.error('Erro ao salvar logs no localStorage:', e);
+      }
+    }
+  }, [logs]);
 
   // Auto-propagation of fixed expenses when a new month is visited
   useEffect(() => {
@@ -3052,7 +3220,7 @@ export default function App() {
 
   // Batch clear car extra expenses for a specific month (e.g. phantom imported expenses)
   const handleClearMonthCarExpenses = (monthToClear: number, yearToClear: number) => {
-    const confirm = window.confirm(`Deseja zerar todas as Despesas Extras de Carro (lava-jato, pedágios, estacionamento, recarga externa e outros) do mês de ${MONTH_NAMES[monthToClear - 1]}/${yearToClear}?`);
+    const confirm = window.confirm(`Deseja zerar todas as Despesas Extras de Carro (lava-jato, pedágios, aspiração, recarga externa e outros) do mês de ${MONTH_NAMES[monthToClear - 1]}/${yearToClear}?`);
     if (!confirm) return;
 
     setLogs(prevLogs => {
@@ -3252,34 +3420,39 @@ export default function App() {
 
     setConfirmHighKmPrompt(false);
     setHighKmTargetDate('');
+    setCustomManualDeductKm('');
 
     const parsedSobrou = sobrouBateria === '' || sobrouBateria === null || sobrouBateria === undefined ? null : parseNum(sobrouBateria);
     let finalCustoEnergia = parseNum(custoEnergia);
     const parsedValKwh = parseNum(valorKwh) || parseFloat(carProfile.kwhCostRate) || 1.05;
     const parsedCap = parseNum(capacidadeBateria) || parseFloat(carProfile.batteryCapacityKwh) || 53.6;
 
-    // Only auto-calculate if not overridden by user and value is empty/zero
-    if (parsedKm > 0 && !isEnergyCostOverridden && finalCustoEnergia <= 0) {
+    // Recalculate energy cost if customKm was applied or if not overridden and zero
+    if (parsedKm > 0 && (!isEnergyCostOverridden || customKm !== undefined) && (finalCustoEnergia <= 0 || customKm !== undefined)) {
       const consumedPercent = (parsedSobrou !== null && parsedSobrou >= 0 && parsedSobrou <= 100) ? (100 - parsedSobrou) : Math.min(95, (parsedKm / (carProfile.estimatedAutonomyKm || 300)) * 100);
       const energyConsumed = (consumedPercent / 100) * parsedCap;
       finalCustoEnergia = parseFloat((energyConsumed * parsedValKwh).toFixed(2));
+      setCustoEnergia(formatMoneyValue(finalCustoEnergia));
     }
+
+    const resolvedIsDayOff = parsedKm > 0 ? false : isDayOff;
 
     const newLog: DailyLog = {
       id: targetDate,
       date: targetDate,
-      isDayOff,
+      isDayOff: resolvedIsDayOff,
       sobrouBateria: parsedSobrou,
       valorKwh: parsedValKwh,
       capacidadeBateria: parsedCap,
       kmRodado: parsedKm,
       custoEnergia: finalCustoEnergia,
-      diariaCarro: isDayOff ? 0 : parseNum(diariaCarro),
+      diariaCarro: resolvedIsDayOff ? 0 : parseNum(diariaCarro),
       carExpenses: {
         wash: parseNum(wash),
         toll: parseNum(toll),
         maintenance: parseNum(maintenance),
         parking: parseNum(parking),
+        publicCharging: parseNum(publicCharging),
         other: parseNum(carOther),
       },
       foodExpenses: {
@@ -3291,12 +3464,14 @@ export default function App() {
       app99: {
         rides: parseI(nRides),
         earnings: parseNum(nEarnings),
-        bonus: parseNum(nBonus)
+        bonus: parseNum(nBonus),
+        ajuste: parseNum(nAj)
       },
       appUber: {
         rides: parseI(uRides),
         earnings: parseNum(uEarnings),
-        bonus: parseNum(uBonus)
+        bonus: parseNum(uBonus),
+        ajuste: parseNum(uAj)
       },
       appParticular: {
         rides: parseI(pRides),
@@ -3314,38 +3489,37 @@ export default function App() {
     const kmDiff = newLog.kmRodado - previousKm;
 
     if (kmDiff !== 0) {
-      setCarProfile(prev => ({
-        ...prev,
-        currentKm: Math.max(0, Math.round((prev.currentKm || 0) + kmDiff))
-      }));
+      setCarProfile(prev => {
+        const updated = {
+          ...prev,
+          currentKm: Math.max(0, Math.round((prev.currentKm || 0) + kmDiff))
+        };
+        try {
+          localStorage.setItem('driver_car_profile_v2', JSON.stringify(updated));
+        } catch (e) {
+          console.error(e);
+        }
+        return updated;
+      });
     }
 
     setLogs(prev => {
       const filtered = prev.filter(l => l.date !== targetDate);
-      return [...filtered, newLog].sort((a, b) => a.date.localeCompare(b.date));
+      const updated = [...filtered, newLog].sort((a, b) => a.date.localeCompare(b.date));
+      try {
+        localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(updated));
+      } catch (e) {
+        console.error('Erro ao persistir logs no localStorage:', e);
+      }
+      return updated;
     });
 
     setIsHistorySectionOpen(true);
     setHighlightedRowId(targetDate);
-    setSweepNotification(`🚗 Dados do veículo (${carProfile.modelName || 'Cadastrado'}) carregados com sucesso no lançamento!`);
-    setTimeout(() => setSweepNotification(null), 4000);
+    const formattedDate = targetDate.split('-').reverse().join('/');
+    setSweepNotification(`✓ Lançamento de ${formattedDate} salvo com sucesso (${parsedKm} KM)!`);
+    setTimeout(() => setSweepNotification(null), 5000);
     setIsModalOpen(false);
-  };
-
-  const parseNum = (val: any) => {
-    if (typeof val === 'number') return isNaN(val) ? 0 : Math.round(val * 100) / 100;
-    if (!val) return 0;
-    const cleaned = String(val).replace(',', '.');
-    const parsed = parseFloat(cleaned);
-    return isNaN(parsed) ? 0 : Math.round(parsed * 100) / 100;
-  };
-
-  const parseI = (val: any) => {
-    if (typeof val === 'number') return Math.round(val);
-    if (!val) return 0;
-    const cleaned = String(val).replace(/\D/g, '');
-    const parsed = parseInt(cleaned, 10);
-    return isNaN(parsed) ? 0 : parsed;
   };
 
   
@@ -4546,7 +4720,7 @@ export default function App() {
                           className="py-3 px-3 text-right font-mono text-zinc-400"
                           title={
                             carExpensesSum > 0 
-                              ? `Detalhamento: Lava-jato: ${formatBRL(log.carExpenses?.wash || 0)} | Pedágio: ${formatBRL(log.carExpenses?.toll || 0)} | Estac.: ${formatBRL(log.carExpenses?.parking || 0)} | Recarga Ext.: ${formatBRL(log.carExpenses?.publicCharging || 0)} | Manutenção: ${formatBRL(log.carExpenses?.maintenance || 0)} | Outros: ${formatBRL(log.carExpenses?.other || 0)}`
+                              ? `Detalhamento: Lava-jato: ${formatBRL(log.carExpenses?.wash || 0)} | Pedágio: ${formatBRL(log.carExpenses?.toll || 0)} | Aspiraç.: ${formatBRL(log.carExpenses?.parking || 0)} | Recarga Ext.: ${formatBRL(log.carExpenses?.publicCharging || 0)} | Manutenção: ${formatBRL(log.carExpenses?.maintenance || 0)} | Outros: ${formatBRL(log.carExpenses?.other || 0)}`
                               : 'Sem despesas extras de carro'
                           }
                         >
@@ -5916,11 +6090,13 @@ export default function App() {
                     await LocalNotifications.schedule({
                       notifications: [
                         {
-                          title: 'Teste de Notificação',
-                          body: 'Esta é uma notificação de teste.',
+                          title: 'Controle Diário',
+                          body: 'Notificação do Controle Diário ativa e funcionando!',
                           id: 999,
                           channelId: 'padrao',
-                          smallIcon: 'ic_stat_icon_config_sample',
+                          smallIcon: 'ic_stat_icon',
+                          largeIcon: 'ic_launcher',
+                          iconColor: '#10b981',
                           schedule: { at: new Date(Date.now() + 5000) }
                         }
                       ]
@@ -6844,6 +7020,7 @@ export default function App() {
               {confirmHighKmPrompt && (() => {
                 const targetD = highKmTargetDate || formDate;
                 let prevKmLog: DailyLog | null = null;
+                let isImmediatePrev = false;
                 if (targetD) {
                   const [y, m, d] = targetD.split('-').map(Number);
                   const targetObj = new Date(y, m - 1, d);
@@ -6852,25 +7029,28 @@ export default function App() {
                   const pad = (n: number) => String(n).padStart(2, '0');
                   const prevDateStr = `${prevDateObj.getFullYear()}-${pad(prevDateObj.getMonth() + 1)}-${pad(prevDateObj.getDate())}`;
                   
-                  const exactPrev = logs.find(l => l.date === prevDateStr);
+                  // Procura primeiro pelo dia anterior exato se tiver KM rodado > 0
+                  const exactPrev = logs.find(l => l.date === prevDateStr && (l.kmRodado || 0) > 0);
                   if (exactPrev) {
                     prevKmLog = exactPrev;
+                    isImmediatePrev = true;
                   } else {
-                    const older = logs.filter(l => l.date < targetD).sort((a, b) => b.date.localeCompare(a.date));
-                    if (older.length > 0) prevKmLog = older[0];
+                    // Busca o dia anterior mais recente com rodagem registrada (> 0 KM)
+                    const older = logs.filter(l => l.date < targetD && (l.kmRodado || 0) > 0).sort((a, b) => b.date.localeCompare(a.date));
+                    if (older.length > 0) {
+                      prevKmLog = older[0];
+                      isImmediatePrev = false;
+                    } else {
+                      // Fallback: dia calendário anterior
+                      const anyPrev = logs.find(l => l.date === prevDateStr);
+                      if (anyPrev) prevKmLog = anyPrev;
+                    }
                   }
                 }
 
-                const parseVal = (v: any) => {
-                  if (typeof v === 'number') return isNaN(v) ? 0 : Math.round(v * 100) / 100;
-                  if (!v) return 0;
-                  const parsed = parseFloat(String(v).replace(',', '.'));
-                  return isNaN(parsed) ? 0 : Math.round(parsed * 100) / 100;
-                };
-                const currentKm = parseVal(kmRodado);
-                const prevKm = prevKmLog ? parseVal(prevKmLog.kmRodado) : 0;
+                const currentKm = parseNum(kmRodado);
+                const prevKm = prevKmLog ? parseNum(prevKmLog.kmRodado) : 0;
                 const deductedKm = Math.round(Math.max(0, currentKm - prevKm) * 100) / 100;
-                const removedZeroKm = Math.round(currentKm / 10);
 
                 return (
                   <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center z-[100] p-4 pb-[calc(env(safe-area-inset-bottom)+24px)] animate-fadeIn">
@@ -6892,28 +7072,59 @@ export default function App() {
                       {/* Body Message */}
                       <div className="text-sm text-zinc-200 leading-relaxed space-y-3 bg-zinc-900/60 p-4 rounded-xl border border-zinc-800">
                         <p>
-                          Você informou <span className="font-bold text-red-400 text-base">{kmRodado} KM</span> para hoje.
+                          Você informou <span className="font-bold text-red-400 text-base">{currentKm} KM</span> para hoje.
                         </p>
 
-                        {prevKmLog ? (
+                        {prevKmLog && prevKm > 0 ? (
                           <p className="text-xs sm:text-sm text-zinc-300">
-                            No registro anterior ({prevKmLog.date.split('-').reverse().join('/')}), constavam <span className="font-bold text-emerald-400">{prevKm} KM</span>.
-                            <br /><br />
-                            {prevKm > 0 ? (
-                              <>
-                                Você pode <span className="font-bold text-emerald-400">abater os {prevKm} KM</span> do dia anterior (ficando <span className="font-bold text-emerald-300">{deductedKm} KM</span>), ou confirmar se <span className="font-bold text-red-400">zerou o odômetro</span>.
-                              </>
+                            {isImmediatePrev ? (
+                              <>No registro anterior ({prevKmLog.date.split('-').reverse().join('/')}), constavam <span className="font-bold text-emerald-400">{prevKm} KM</span>.</>
                             ) : (
-                              <>
-                                Você pode confirmar se <span className="font-bold text-red-400">zerou o odômetro</span>.
-                              </>
+                              <>No último dia registrado com rodagem ({prevKmLog.date.split('-').reverse().join('/')}), constavam <span className="font-bold text-emerald-400">{prevKm} KM</span>.</>
                             )}
+                            <br /><br />
+                            Você pode <span className="font-bold text-emerald-400">abater os {prevKm} KM</span> (salvando <span className="font-bold text-emerald-300">{deductedKm} KM</span> hoje), ou confirmar se <span className="font-bold text-red-400">zerou o odômetro</span>.
                           </p>
                         ) : (
                           <p className="text-xs sm:text-sm text-zinc-300">
-                            Você tem certeza que este valor está correto e zerou o odômetro no dia anterior?
+                            No registro anterior ({prevKmLog ? prevKmLog.date.split('-').reverse().join('/') : 'não localizado'}), constavam <span className="font-bold text-zinc-400">0 KM</span>.
+                            <br /><br />
+                            Você pode confirmar se <span className="font-bold text-red-400">zerou o odômetro</span> ou informar abaixo um valor anterior para abater.
                           </p>
                         )}
+
+                        {/* Abatimento manual / personalizado de KM */}
+                        <div className="bg-zinc-950/70 p-3 rounded-xl border border-zinc-800 space-y-2 mt-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-bold text-zinc-400">Abater valor anterior manualmente:</span>
+                            {customManualDeductKm && parseNum(customManualDeductKm) > 0 && parseNum(customManualDeductKm) < currentKm && (
+                              <span className="text-emerald-400 font-mono text-xs font-bold">
+                                Restará: {Math.round(currentKm - parseNum(customManualDeductKm))} KM
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex gap-2">
+                            <input
+                              type="number"
+                              placeholder="KM a abater (ex: 300)"
+                              value={customManualDeductKm}
+                              onChange={(e) => setCustomManualDeductKm(e.target.value)}
+                              className="flex-1 bg-[#11141a] border border-zinc-800 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-100 focus:outline-none focus:border-emerald-500"
+                            />
+                            {parseNum(customManualDeductKm) > 0 && parseNum(customManualDeductKm) < currentKm && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const val = Math.round(currentKm - parseNum(customManualDeductKm));
+                                  executeSaveLog(targetD, true, val);
+                                }}
+                                className="px-3 py-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-xs rounded-lg transition-all shrink-0 cursor-pointer shadow-md shadow-emerald-500/20"
+                              >
+                                Salvar {Math.round(currentKm - parseNum(customManualDeductKm))} KM
+                              </button>
+                            )}
+                          </div>
+                        </div>
                       </div>
 
                       {/* Action Buttons */}
@@ -6924,7 +7135,8 @@ export default function App() {
                             onClick={() => executeSaveLog(targetD, true, deductedKm)}
                             className="py-3 px-4 bg-emerald-500 hover:bg-emerald-600 text-zinc-950 font-extrabold text-xs sm:text-sm rounded-xl transition-all cursor-pointer shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-1.5"
                           >
-                            <span>Abater {prevKm} KM ({deductedKm} KM)</span>
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Abater {prevKm} KM (Salvar {deductedKm} KM)</span>
                           </button>
                         )}
 
@@ -6933,13 +7145,16 @@ export default function App() {
                           onClick={() => executeSaveLog(targetD, true)}
                           className="py-3 px-4 bg-red-500 hover:bg-red-600 text-zinc-950 font-extrabold text-xs sm:text-sm rounded-xl transition-all cursor-pointer shadow-lg shadow-red-500/20 text-center"
                         >
-                          Sim, Zerei ({kmRodado} KM)
+                          Sim, Zerei ({currentKm} KM)
                         </button>
 
                         <button
                           type="button"
-                          onClick={() => setConfirmHighKmPrompt(false)}
-                          className={`py-3 px-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold text-xs sm:text-sm rounded-xl transition-all cursor-pointer text-center ${(!prevKmLog || prevKm <= 0) ? 'col-span-1 sm:col-span-2' : ''}`}
+                          onClick={() => {
+                            setConfirmHighKmPrompt(false);
+                            setCustomManualDeductKm('');
+                          }}
+                          className={`py-3 px-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold text-xs sm:text-sm rounded-xl transition-all cursor-pointer text-center ${(!prevKmLog || prevKm <= 0) ? '' : 'sm:col-span-2'}`}
                         >
                           Corrigir Manualmente
                         </button>
@@ -7437,14 +7652,14 @@ export default function App() {
 
                   {isCarExpensesOpen && (
                     <div className="p-4 bg-zinc-950/80 border-t border-zinc-850 space-y-3 grid grid-cols-2 gap-3">
-                      <div className="space-y-1 col-span-2">
-                        <label className="text-[10px] text-zinc-400 font-medium">Lava-jato / Limpeza (R$)</label>
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-zinc-400 font-medium">Aspiração (R$)</label>
                         <input
                           type="text"
                           inputMode="numeric"
                           placeholder="0,00"
-                          value={wash}
-                          onChange={(e) => handleCurrencyChange(e.target.value, setWash)}
+                          value={parking}
+                          onChange={(e) => handleCurrencyChange(e.target.value, setParking)}
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
@@ -7469,14 +7684,14 @@ export default function App() {
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-zinc-400 font-medium">Estacionamento (R$)</label>
+                      <div className="space-y-1 col-span-2">
+                        <label className="text-[10px] text-zinc-400 font-medium">Lava-jato / Limpeza (R$)</label>
                         <input
                           type="text"
                           inputMode="numeric"
                           placeholder="0,00"
-                          value={parking}
-                          onChange={(e) => handleCurrencyChange(e.target.value, setParking)}
+                          value={wash}
+                          onChange={(e) => handleCurrencyChange(e.target.value, setWash)}
                           className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-1.5 px-2.5 font-mono text-zinc-200"
                         />
                       </div>
@@ -7679,6 +7894,21 @@ export default function App() {
                         placeholder="0,00"
                         value={uBonus}
                         onChange={(e) => handleCurrencyChange(e.target.value, setUBonus)}
+                        onKeyDown={(e) => handleModalInputNext(e, uAjInputRef)}
+                        className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-zinc-400">Ajuste (R$)</label>
+                      <input
+                        ref={uAjInputRef}
+                        tabIndex={26}
+                        enterKeyHint="next"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="0,00"
+                        value={uAj}
+                        onChange={(e) => handleCurrencyChange(e.target.value, setUAj)}
                         onKeyDown={(e) => handleModalInputNext(e, pRidesInputRef)}
                         className="w-full bg-[#11141a] border border-zinc-850 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
                       />
@@ -8699,7 +8929,7 @@ export default function App() {
                       4. Refeições e Despesas Operacionais do Dia
                     </h3>
                     <p className="text-xs text-zinc-300 leading-relaxed">
-                      Registre seus gastos com <b>Almoço, Jantar e Café</b>, além de despesas do veículo no dia (<b>Lavagem, Pedágio, Estacionamento, Recarga de Rua e Manutenções Rápidas</b>). Todos os custos são abatidos para exibir o <b>Lucro Líquido Real</b> que vai para o seu bolso.
+                      Registre seus gastos com <b>Almoço, Jantar e Café</b>, além de despesas do veículo no dia (<b>Lavagem, Pedágio, Aspiração, Recarga de Rua e Manutenções Rápidas</b>). Todos os custos são abatidos para exibir o <b>Lucro Líquido Real</b> que vai para o seu bolso.
                     </p>
                   </div>
                 </div>
@@ -9033,6 +9263,11 @@ export default function App() {
                       type="text"
                       value={carProfile.modelName}
                       onChange={(e) => setCarProfile(prev => ({ ...prev, modelName: e.target.value }))}
+                      onBlur={() => {
+                        if (carProfile.modelName && carProfile.modelName.trim().length >= 2) {
+                          handleAutoFetchFipe(carProfile.modelName, carProfile.manufactureYear);
+                        }
+                      }}
                       placeholder={carProfile.vehicleType === 'eletrico' ? "Ex: BYD Dolphin EV, GWM Ora 03" : "Ex: Chevrolet Onix, Hyundai HB20"}
                       className="w-full bg-zinc-900 border border-zinc-700 focus:border-emerald-400 rounded-xl px-4 py-3 text-sm font-semibold text-zinc-100 outline-none transition-colors"
                     />
@@ -9086,6 +9321,11 @@ export default function App() {
                       type="text"
                       value={carProfile.manufactureYear}
                       onChange={(e) => setCarProfile(prev => ({ ...prev, manufactureYear: e.target.value }))}
+                      onBlur={() => {
+                        if (carProfile.modelName && carProfile.modelName.trim().length >= 2) {
+                          handleAutoFetchFipe(carProfile.modelName, carProfile.manufactureYear);
+                        }
+                      }}
                       placeholder="Ex: 2024 ou 2024/2025"
                       className="w-full bg-zinc-900 border border-zinc-700 focus:border-emerald-400 rounded-xl px-4 py-3 text-sm font-semibold text-zinc-100 outline-none transition-colors"
                     />
@@ -9105,96 +9345,133 @@ export default function App() {
                     />
                   </div>
 
-                  {/* Manual Input: Valor de Mercado (FIPE) */}
-                  <div className="sm:col-span-2 p-4 bg-zinc-950/80 border-2 border-emerald-500/40 rounded-2xl space-y-2.5">
-                    <div className="flex flex-wrap justify-between items-center gap-2">
-                      <div>
-                        <label className="text-sm font-black text-emerald-300 flex items-center gap-1.5">
-                          <DollarSign className="w-4 h-4 text-emerald-400 stroke-[2.5]" />
-                          <span>Valor de Mercado (FIPE)</span>
-                        </label>
-                        <p className="text-[11px] text-zinc-400">
-                          Preencha manualmente o valor de mercado ou da tabela FIPE do seu veículo.
-                        </p>
-                      </div>
+                  {/* Card Tabela FIPE (Compacto, Moderno & Automático) */}
+                  <div className="sm:col-span-2 bg-[#0e1117] border border-emerald-500/30 rounded-2xl p-3.5 space-y-2.5 shadow-lg shadow-emerald-950/20">
+                    <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
-                        {(carProfile.fipeValue && carProfile.fipeValue > 0) || fipeInputStr ? (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setFipeInputStr('');
-                              setCarProfile(prev => ({ ...prev, fipeValue: 0 }));
-                            }}
-                            className="text-xs bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer flex items-center gap-1"
-                            title="Apagar valor para digitar do zero"
-                          >
-                            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                            <span>Limpar / Apagar</span>
-                          </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          onClick={handleAutoFetchFipe}
+                        <div className="p-1.5 bg-emerald-500/10 text-emerald-400 rounded-lg border border-emerald-500/20">
+                          <DollarSign className="w-4 h-4 stroke-[2.5]" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black text-zinc-100">Tabela FIPE (Valor de Mercado)</span>
+                            <span className="text-[9px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded-full font-bold">
+                              Automático
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-zinc-400">
+                            Consulta oficial FIPE para depreciação e custo real
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleAutoFetchFipe()}
+                        disabled={isFetchingFipe}
+                        className="text-xs bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-black px-3 py-1.5 rounded-xl transition-all shadow-md shadow-emerald-500/20 flex items-center gap-1.5 cursor-pointer shrink-0"
+                        title="Buscar cotação oficial FIPE"
+                      >
+                        <Search className={`w-3.5 h-3.5 ${isFetchingFipe ? 'animate-spin' : ''}`} />
+                        <span>{isFetchingFipe ? 'Buscando...' : 'Buscar FIPE'}</span>
+                      </button>
+                    </div>
+
+                    {/* Seletor de Mês/Ano Retroativo FIPE */}
+                    <div className="flex items-center gap-2 pt-1">
+                      <div className="flex items-center gap-1.5 bg-[#141822] border border-zinc-750 rounded-xl px-2.5 py-1.5 flex-1">
+                        <CalendarIcon className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        <select
+                          value={selectedFipeRefId}
+                          onChange={(e) => handleHistoricalFipeFetch(e.target.value)}
                           disabled={isFetchingFipe}
-                          className="text-xs text-zinc-300 hover:text-emerald-300 bg-zinc-900 hover:bg-zinc-850 border border-zinc-700 px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer flex items-center gap-1"
-                          title="Tentar buscar cotação na API pública da FIPE"
+                          className="bg-transparent text-xs text-zinc-200 outline-none w-full cursor-pointer font-medium"
                         >
-                          {isFetchingFipe ? 'Consultando...' : '🔍 Buscar FIPE Auto'}
-                        </button>
+                          {fipeReferences.map((ref) => (
+                            <option key={ref.id} value={ref.id} className="bg-[#141822] text-zinc-200">
+                              Mês Referência: {ref.label}
+                            </option>
+                          ))}
+                        </select>
                       </div>
                     </div>
 
+                    {/* Input Field com Valor Formatado */}
+                    <div className="relative flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="0,00"
+                          value={fipeInputStr}
+                          onChange={(e) => handleCurrencyChange(e.target.value, (val) => {
+                            setFipeInputStr(val);
+                            setCarProfile(prev => ({ ...prev, fipeValue: parseNum(val) }));
+                          })}
+                          className="w-full bg-[#141822] border border-zinc-750 focus:border-emerald-400 rounded-xl px-3 py-2 text-base font-mono font-bold text-emerald-300 outline-none transition-colors pr-10"
+                        />
+                        <span className="absolute right-3 top-2.5 text-xs text-zinc-500 font-mono font-bold">R$</span>
+                      </div>
+
+                      {(carProfile.fipeValue || fipeInputStr) ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFipeInputStr('');
+                            setCarProfile(prev => ({ ...prev, fipeValue: 0 }));
+                            setFipeStatusMessage(null);
+                            setFipeAlternatives([]);
+                            setFipeDetails(null);
+                          }}
+                          className="p-2 text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-xl transition-colors cursor-pointer border border-transparent hover:border-rose-500/20"
+                          title="Limpar valor"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      ) : null}
+                    </div>
+
+                    {/* Status / Mensagem da FIPE */}
                     {fipeStatusMessage && (
-                      <div className={`p-2.5 rounded-xl text-xs font-semibold flex items-center justify-between gap-2 transition-all ${
+                      <div className={`p-2 rounded-xl text-xs font-semibold flex items-center justify-between gap-2 transition-all ${
                         fipeStatusMessage.type === 'error'
-                          ? 'bg-rose-950/70 border border-rose-500/50 text-rose-300'
+                          ? 'bg-rose-950/60 border border-rose-500/40 text-rose-300'
                           : fipeStatusMessage.type === 'success'
-                          ? 'bg-emerald-950/70 border border-emerald-500/50 text-emerald-300'
-                          : 'bg-blue-950/70 border border-blue-500/50 text-blue-300 animate-pulse'
+                          ? 'bg-emerald-950/60 border border-emerald-500/40 text-emerald-300'
+                          : 'bg-sky-950/60 border border-sky-500/40 text-sky-300 animate-pulse'
                       }`}>
-                        <span>{fipeStatusMessage.text}</span>
+                        <span className="text-[11px] leading-tight">{fipeStatusMessage.text}</span>
                         <button 
                           type="button" 
                           onClick={() => setFipeStatusMessage(null)}
-                          className="text-zinc-400 hover:text-zinc-200 text-xs px-1.5 py-0.5 rounded cursor-pointer"
+                          className="text-zinc-400 hover:text-zinc-200 text-xs px-1.5 py-0.5 rounded cursor-pointer shrink-0"
                         >
                           ✕
                         </button>
                       </div>
                     )}
 
-                    <div className="relative">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={fipeInputStr}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setFipeInputStr(val);
-                          const parsed = parseNum(val);
-                          setCarProfile(prev => ({ ...prev, fipeValue: parsed }));
-                        }}
-                        onBlur={() => {
-                          if (carProfile.fipeValue && carProfile.fipeValue > 0) {
-                            setFipeInputStr(formatMoneyValue(carProfile.fipeValue));
-                          }
-                        }}
-                        placeholder="Ex: 85.000,00 ou digite o valor"
-                        className="w-full bg-zinc-900 border-2 border-zinc-700 focus:border-emerald-400 rounded-xl px-4 py-3.5 text-base sm:text-lg font-bold font-mono text-emerald-300 outline-none transition-colors pr-12 shadow-inner"
-                      />
-                      <span className="absolute right-4 top-3.5 text-sm text-zinc-400 font-mono font-bold">R$</span>
-                    </div>
-
-                    <div className="flex items-center justify-between text-[11px] text-zinc-400 pt-0.5">
-                      <span>
-                        {carProfile.fipeValue && carProfile.fipeValue > 0 
-                          ? `Valor ativo no cadastro: ${formatBRL(carProfile.fipeValue)}`
-                          : 'Nenhum valor cadastrado. Digite o valor acima e clique em "Salvar Dados do Veículo".'}
-                      </span>
-                    </div>
+                    {/* Sugestões de Modelos caso haja versões adicionais (ex: Dolphin GS, Mini, Plus) */}
+                    {fipeAlternatives.length > 1 && fipeDetails && (
+                      <div className="space-y-1.5 pt-1.5 border-t border-zinc-800/60">
+                        <span className="text-[10px] text-zinc-400 font-medium block">
+                          Ou selecione sua versão exata na base FIPE:
+                        </span>
+                        <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto pr-1">
+                          {fipeAlternatives.map((alt) => (
+                            <button
+                              key={alt.code}
+                              type="button"
+                              onClick={() => handleSelectAlternativeModel(fipeDetails.brandCode, alt.code)}
+                              className="text-[10px] px-2 py-1 bg-zinc-850 hover:bg-emerald-950/80 hover:text-emerald-300 hover:border-emerald-500/50 text-zinc-300 rounded-lg border border-zinc-750 font-medium transition-all text-left cursor-pointer"
+                            >
+                              {alt.name}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
-
-
                 </div>
               </div>
 
@@ -9621,6 +9898,7 @@ export default function App() {
           </div>
         </div>
       )}
+
 
       {/* MODAL DE INDICADORES FINANCEIROS (KPIS) */}
       {isKpisModalOpen && (

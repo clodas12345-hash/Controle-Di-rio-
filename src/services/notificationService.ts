@@ -46,8 +46,11 @@ export async function sendAppNotification(title: string, options?: { body?: stri
               title,
               body: options?.body || '',
               id: options?.id || Math.floor(Math.random() * 1000000) + 1,
-              smallIcon: 'ic_launcher',
-              sound: 'default'
+              smallIcon: 'ic_stat_icon',
+              largeIcon: 'ic_launcher',
+              iconColor: '#10b981',
+              sound: 'default',
+              channelId: 'padrao'
             }
           ]
         });
@@ -63,6 +66,7 @@ export async function sendAppNotification(title: string, options?: { body?: stri
       new Notification(title, {
         body: options?.body || '',
         icon: iconUrl,
+        badge: '/ic_stat_icon.png',
         tag: options?.tag || 'gkd-controle-diario',
       });
       return;

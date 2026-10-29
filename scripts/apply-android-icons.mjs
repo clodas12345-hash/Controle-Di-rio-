@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 
 async function generateIcons() {
-  const iconSrc = path.resolve('public', 'icon2.png');
+  const iconSrc = path.resolve('public', 'icon.png');
+  const statIconSrc = path.resolve('public', 'ic_stat_icon.png');
   const resDir = path.resolve('android', 'app', 'src', 'main', 'res');
 
   if (!fs.existsSync(iconSrc)) {
@@ -59,7 +60,9 @@ async function generateIcons() {
     }
   }
 
-  // Generate notification small icon (ic_stat_icon.png) for status bar / notifications
+  // Generate notification small icons (transparent silhouette for Android status bar)
+  // Supports ic_stat_icon, icon, and ic_notification names so any call resolves correctly
+  const statSource = fs.existsSync(statIconSrc) ? statIconSrc : iconSrc;
   const statIconSizes = [
     { dir: 'drawable', size: 24 },
     { dir: 'drawable-mdpi', size: 24 },
@@ -75,15 +78,22 @@ async function generateIcons() {
       fs.mkdirSync(targetFolder, { recursive: true });
     }
     if (sharp) {
-      await sharp(iconSrc)
+      const buffer = await sharp(statSource)
         .resize(item.size, item.size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
         .png()
-        .toFile(path.join(targetFolder, 'ic_stat_icon.png'));
+        .toBuffer();
+
+      fs.writeFileSync(path.join(targetFolder, 'ic_stat_icon.png'), buffer);
+      fs.writeFileSync(path.join(targetFolder, 'icon.png'), buffer);
+      fs.writeFileSync(path.join(targetFolder, 'ic_notification.png'), buffer);
     } else {
-      fs.copyFileSync(iconSrc, path.join(targetFolder, 'ic_stat_icon.png'));
+      fs.copyFileSync(statSource, path.join(targetFolder, 'ic_stat_icon.png'));
+      fs.copyFileSync(statSource, path.join(targetFolder, 'icon.png'));
+      fs.copyFileSync(statSource, path.join(targetFolder, 'ic_notification.png'));
     }
   }
 
+  // Splash screen
   const drawableDirs = ['drawable', 'drawable-land-hdpi', 'drawable-land-mdpi', 'drawable-land-xhdpi', 'drawable-land-xxhdpi', 'drawable-land-xxxhdpi', 'drawable-port-hdpi', 'drawable-port-mdpi', 'drawable-port-xhdpi', 'drawable-port-xxhdpi', 'drawable-port-xxxhdpi'];
   for (const d of drawableDirs) {
     const dPath = path.join(resDir, d);
@@ -92,7 +102,7 @@ async function generateIcons() {
     }
   }
 
-  console.log('✅ Android icons & notification small icons successfully injected!');
+  console.log('✅ Android icons & notification small icons successfully injected with official Controle Diário logo!');
 }
 
 generateIcons().catch(console.error);

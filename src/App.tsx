@@ -13,7 +13,7 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { App as CapApp } from '@capacitor/app';
-import { fetchFipeValue, fetchFipePriceByCode, FipeAlternativeModel } from './services/fipeService';
+import { fetchFipeValue, fetchFipePriceByCode, getFipeReferences, FipeAlternativeModel, FipeReferenceOption } from './services/fipeService';
 import JSZip from 'jszip';
 import { 
   Car, 
@@ -288,11 +288,29 @@ export const parseNum = (val: any): number => {
   if (!val) return 0;
   let s = String(val).trim();
   if (!s) return 0;
-  if (s.includes(',') && s.includes('.')) {
-    s = s.replace(/\./g, '').replace(',', '.');
-  } else if (s.includes(',')) {
-    s = s.replace(',', '.');
+
+  // Se a string tem múltiplos pontos (ex: "1.280.00"), remove todos os pontos antes do último
+  const dotCount = (s.match(/\./g) || []).length;
+  if (dotCount > 1) {
+    const lastDotIndex = s.lastIndexOf('.');
+    s = s.substring(0, lastDotIndex).replace(/\./g, '') + s.substring(lastDotIndex);
   }
+
+  if (s.includes(',') && s.includes('.')) {
+    if (s.indexOf('.') < s.indexOf(',')) {
+      s = s.replace(/\./g, '').replace(',', '.');
+    } else {
+      s = s.replace(/,/g, '');
+    }
+  } else if (s.includes(',')) {
+    s = s.replace(/\./g, '').replace(',', '.');
+  } else if (s.includes('.')) {
+    const parts = s.split('.');
+    if (parts.length === 2 && parts[1].length === 3) {
+      s = s.replace(/\./g, '');
+    }
+  }
+
   const parsed = parseFloat(s);
   return isNaN(parsed) ? 0 : Math.round(parsed * 100) / 100;
 };
@@ -330,7 +348,11 @@ export const formatMoneyValue = (val: any): string => {
 };
 
 export const handleCurrencyChange = (rawInput: string, setter: (val: string) => void) => {
-  const digits = rawInput.replace(/\D/g, '');
+  if (rawInput === undefined || rawInput === null) {
+    setter('');
+    return;
+  }
+  const digits = String(rawInput).replace(/\D/g, '');
   if (!digits || parseInt(digits, 10) === 0) {
     setter('');
     return;
@@ -558,14 +580,15 @@ const getPreloadedLogs = (year: number, month: number): DailyLog[] => {
 
 const sanitizeDailyLog = (l: DailyLog): DailyLog => {
   const sanitizeNum = (v: any) => {
-    if (typeof v === 'string') v = parseFloat(v.replace(',', '.'));
-    return (typeof v === 'number' && !Number.isNaN(v) && Number.isFinite(v) ? Math.round(v * 100) / 100 : 0);
+    if (typeof v === 'number') return isNaN(v) ? 0 : Math.round(v * 100) / 100;
+    return parseNum(v);
   };
 
   const sanitizeNumOrNull = (v: any) => {
     if (v === undefined || v === null || v === '' || v === -1) return null;
-    if (typeof v === 'string') v = parseFloat(v.replace(',', '.'));
-    return (typeof v === 'number' && !Number.isNaN(v) && Number.isFinite(v) ? Math.round(v * 100) / 100 : null);
+    if (typeof v === 'number') return isNaN(v) ? null : Math.round(v * 100) / 100;
+    const p = parseNum(v);
+    return p > 0 ? p : null;
   };
   
   const dateStr = l.date || '';
@@ -1249,6 +1272,7 @@ export default function App() {
   const [prevDayPromptInfo, setPrevDayPromptInfo] = useState<{ prevDateStr: string; formDate: string } | null>(null);
   const [confirmHighKmPrompt, setConfirmHighKmPrompt] = useState(false);
   const [highKmTargetDate, setHighKmTargetDate] = useState<string>('');
+  const [customManualDeductKm, setCustomManualDeductKm] = useState<string>('');
   const [confirmBatteryEstimatePrompt, setConfirmBatteryEstimatePrompt] = useState(false);
   const [batteryEstimateInfo, setBatteryEstimateInfo] = useState<{
     km: number;
@@ -1457,7 +1481,7 @@ export default function App() {
     setIsFetchingFipe(true);
     setFipeStatusMessage({ text: 'Atualizando cotação para o modelo selecionado...', type: 'info' });
     try {
-      const res = await fetchFipePriceByCode(brandCode, modelCode, carProfile.manufactureYear);
+      const res = await fetchFipePriceByCode(brandCode, modelCode, carProfile.manufactureYear, undefined, selectedFipeRefId);
       if (res && res.value > 0) {
         setCarProfile(prev => ({ ...prev, fipeValue: res.value }));
         setFipeInputStr(formatMoneyValue(res.value));
@@ -1474,6 +1498,67 @@ export default function App() {
       }
     } catch (err) {
       console.warn('Erro ao selecionar modelo FIPE alternativo:', err);
+    } finally {
+      setIsFetchingFipe(false);
+    }
+  };
+
+  const [fipeReferences, setFipeReferences] = useState<FipeReferenceOption[]>([]);
+  const [selectedFipeRefId, setSelectedFipeRefId] = useState<string>('');
+
+  useEffect(() => {
+    const refs = getFipeReferences();
+    setFipeReferences(refs);
+  }, []);
+
+  const handleHistoricalFipeFetch = async (targetId: string) => {
+    setSelectedFipeRefId(targetId);
+    if (!targetId) {
+      handleAutoFetchFipe();
+      return;
+    }
+
+    const modelToSearch = carProfile.modelName;
+    const yearToSearch = carProfile.manufactureYear;
+
+    if (!modelToSearch || modelToSearch.trim().length < 2) {
+      setFipeStatusMessage({ text: 'Preencha a Marca ou Modelo do veículo antes de buscar por mês retroativo.', type: 'info' });
+      return;
+    }
+
+    setIsFetchingFipe(true);
+    const refItem = fipeReferences.find(r => r.id === targetId);
+    setFipeStatusMessage({ text: `Consultando cotação FIPE para ${refItem ? refItem.label : targetId}...`, type: 'info' });
+
+    try {
+      const res = await fetchFipeValue(modelToSearch, yearToSearch, targetId);
+      if (res && res.value > 0) {
+        setCarProfile(prev => ({ ...prev, fipeValue: res.value }));
+        setFipeInputStr(formatMoneyValue(res.value));
+        setFipeDetails({
+          brandCode: res.brandCode,
+          modelFullName: res.modelFullName,
+          refMonth: res.referenceMonth,
+          fipeCode: res.fipeCode
+        });
+        if (res.alternativeModels && res.alternativeModels.length > 1) {
+          setFipeAlternatives(res.alternativeModels);
+        } else {
+          setFipeAlternatives([]);
+        }
+        setFipeStatusMessage({ 
+          text: `✓ Cotação (${res.referenceMonth}): ${formatBRL(res.value)} (${res.modelFullName})`, 
+          type: 'success' 
+        });
+      } else {
+        setFipeStatusMessage({ 
+          text: `Não foi encontrada cotação para "${modelToSearch}" no mês ${refItem ? refItem.label : targetId}.`, 
+          type: 'error' 
+        });
+      }
+    } catch (e) {
+      console.warn('Erro ao consultar FIPE retroativa:', e);
+      setFipeStatusMessage({ text: 'Erro ao consultar cotação FIPE retroativa.', type: 'error' });
     } finally {
       setIsFetchingFipe(false);
     }
@@ -2140,6 +2225,17 @@ export default function App() {
     const sanitized = sanitizeFixedExpensesMap(fixedExpensesByMonth);
     localStorage.setItem('driver_fixed_expenses_v6_by_month', JSON.stringify(sanitized));
   }, [fixedExpensesByMonth]);
+
+  useEffect(() => {
+    if ((window as any).isClearingAll) return;
+    if (logs && logs.length > 0) {
+      try {
+        localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(logs));
+      } catch (e) {
+        console.error('Erro ao salvar logs no localStorage:', e);
+      }
+    }
+  }, [logs]);
 
   // Auto-propagation of fixed expenses when a new month is visited
   useEffect(() => {
@@ -3324,34 +3420,39 @@ export default function App() {
 
     setConfirmHighKmPrompt(false);
     setHighKmTargetDate('');
+    setCustomManualDeductKm('');
 
     const parsedSobrou = sobrouBateria === '' || sobrouBateria === null || sobrouBateria === undefined ? null : parseNum(sobrouBateria);
     let finalCustoEnergia = parseNum(custoEnergia);
     const parsedValKwh = parseNum(valorKwh) || parseFloat(carProfile.kwhCostRate) || 1.05;
     const parsedCap = parseNum(capacidadeBateria) || parseFloat(carProfile.batteryCapacityKwh) || 53.6;
 
-    // Only auto-calculate if not overridden by user and value is empty/zero
-    if (parsedKm > 0 && !isEnergyCostOverridden && finalCustoEnergia <= 0) {
+    // Recalculate energy cost if customKm was applied or if not overridden and zero
+    if (parsedKm > 0 && (!isEnergyCostOverridden || customKm !== undefined) && (finalCustoEnergia <= 0 || customKm !== undefined)) {
       const consumedPercent = (parsedSobrou !== null && parsedSobrou >= 0 && parsedSobrou <= 100) ? (100 - parsedSobrou) : Math.min(95, (parsedKm / (carProfile.estimatedAutonomyKm || 300)) * 100);
       const energyConsumed = (consumedPercent / 100) * parsedCap;
       finalCustoEnergia = parseFloat((energyConsumed * parsedValKwh).toFixed(2));
+      setCustoEnergia(formatMoneyValue(finalCustoEnergia));
     }
+
+    const resolvedIsDayOff = parsedKm > 0 ? false : isDayOff;
 
     const newLog: DailyLog = {
       id: targetDate,
       date: targetDate,
-      isDayOff,
+      isDayOff: resolvedIsDayOff,
       sobrouBateria: parsedSobrou,
       valorKwh: parsedValKwh,
       capacidadeBateria: parsedCap,
       kmRodado: parsedKm,
       custoEnergia: finalCustoEnergia,
-      diariaCarro: isDayOff ? 0 : parseNum(diariaCarro),
+      diariaCarro: resolvedIsDayOff ? 0 : parseNum(diariaCarro),
       carExpenses: {
         wash: parseNum(wash),
         toll: parseNum(toll),
         maintenance: parseNum(maintenance),
         parking: parseNum(parking),
+        publicCharging: parseNum(publicCharging),
         other: parseNum(carOther),
       },
       foodExpenses: {
@@ -3363,12 +3464,14 @@ export default function App() {
       app99: {
         rides: parseI(nRides),
         earnings: parseNum(nEarnings),
-        bonus: parseNum(nBonus)
+        bonus: parseNum(nBonus),
+        ajuste: parseNum(nAj)
       },
       appUber: {
         rides: parseI(uRides),
         earnings: parseNum(uEarnings),
-        bonus: parseNum(uBonus)
+        bonus: parseNum(uBonus),
+        ajuste: parseNum(uAj)
       },
       appParticular: {
         rides: parseI(pRides),
@@ -3386,38 +3489,37 @@ export default function App() {
     const kmDiff = newLog.kmRodado - previousKm;
 
     if (kmDiff !== 0) {
-      setCarProfile(prev => ({
-        ...prev,
-        currentKm: Math.max(0, Math.round((prev.currentKm || 0) + kmDiff))
-      }));
+      setCarProfile(prev => {
+        const updated = {
+          ...prev,
+          currentKm: Math.max(0, Math.round((prev.currentKm || 0) + kmDiff))
+        };
+        try {
+          localStorage.setItem('driver_car_profile_v2', JSON.stringify(updated));
+        } catch (e) {
+          console.error(e);
+        }
+        return updated;
+      });
     }
 
     setLogs(prev => {
       const filtered = prev.filter(l => l.date !== targetDate);
-      return [...filtered, newLog].sort((a, b) => a.date.localeCompare(b.date));
+      const updated = [...filtered, newLog].sort((a, b) => a.date.localeCompare(b.date));
+      try {
+        localStorage.setItem('driver_daily_tracker_logs_v_clean', JSON.stringify(updated));
+      } catch (e) {
+        console.error('Erro ao persistir logs no localStorage:', e);
+      }
+      return updated;
     });
 
     setIsHistorySectionOpen(true);
     setHighlightedRowId(targetDate);
-    setSweepNotification(`🚗 Dados do veículo (${carProfile.modelName || 'Cadastrado'}) carregados com sucesso no lançamento!`);
-    setTimeout(() => setSweepNotification(null), 4000);
+    const formattedDate = targetDate.split('-').reverse().join('/');
+    setSweepNotification(`✓ Lançamento de ${formattedDate} salvo com sucesso (${parsedKm} KM)!`);
+    setTimeout(() => setSweepNotification(null), 5000);
     setIsModalOpen(false);
-  };
-
-  const parseNum = (val: any) => {
-    if (typeof val === 'number') return isNaN(val) ? 0 : Math.round(val * 100) / 100;
-    if (!val) return 0;
-    const cleaned = String(val).replace(',', '.');
-    const parsed = parseFloat(cleaned);
-    return isNaN(parsed) ? 0 : Math.round(parsed * 100) / 100;
-  };
-
-  const parseI = (val: any) => {
-    if (typeof val === 'number') return Math.round(val);
-    if (!val) return 0;
-    const cleaned = String(val).replace(/\D/g, '');
-    const parsed = parseInt(cleaned, 10);
-    return isNaN(parsed) ? 0 : parsed;
   };
 
   
@@ -5988,11 +6090,13 @@ export default function App() {
                     await LocalNotifications.schedule({
                       notifications: [
                         {
-                          title: 'Teste de Notificação',
-                          body: 'Esta é uma notificação de teste.',
+                          title: 'Controle Diário',
+                          body: 'Notificação do Controle Diário ativa e funcionando!',
                           id: 999,
                           channelId: 'padrao',
-                          smallIcon: 'icon',
+                          smallIcon: 'ic_stat_icon',
+                          largeIcon: 'ic_launcher',
+                          iconColor: '#10b981',
                           schedule: { at: new Date(Date.now() + 5000) }
                         }
                       ]
@@ -6916,6 +7020,7 @@ export default function App() {
               {confirmHighKmPrompt && (() => {
                 const targetD = highKmTargetDate || formDate;
                 let prevKmLog: DailyLog | null = null;
+                let isImmediatePrev = false;
                 if (targetD) {
                   const [y, m, d] = targetD.split('-').map(Number);
                   const targetObj = new Date(y, m - 1, d);
@@ -6924,25 +7029,28 @@ export default function App() {
                   const pad = (n: number) => String(n).padStart(2, '0');
                   const prevDateStr = `${prevDateObj.getFullYear()}-${pad(prevDateObj.getMonth() + 1)}-${pad(prevDateObj.getDate())}`;
                   
-                  const exactPrev = logs.find(l => l.date === prevDateStr);
+                  // Procura primeiro pelo dia anterior exato se tiver KM rodado > 0
+                  const exactPrev = logs.find(l => l.date === prevDateStr && (l.kmRodado || 0) > 0);
                   if (exactPrev) {
                     prevKmLog = exactPrev;
+                    isImmediatePrev = true;
                   } else {
-                    const older = logs.filter(l => l.date < targetD).sort((a, b) => b.date.localeCompare(a.date));
-                    if (older.length > 0) prevKmLog = older[0];
+                    // Busca o dia anterior mais recente com rodagem registrada (> 0 KM)
+                    const older = logs.filter(l => l.date < targetD && (l.kmRodado || 0) > 0).sort((a, b) => b.date.localeCompare(a.date));
+                    if (older.length > 0) {
+                      prevKmLog = older[0];
+                      isImmediatePrev = false;
+                    } else {
+                      // Fallback: dia calendário anterior
+                      const anyPrev = logs.find(l => l.date === prevDateStr);
+                      if (anyPrev) prevKmLog = anyPrev;
+                    }
                   }
                 }
 
-                const parseVal = (v: any) => {
-                  if (typeof v === 'number') return isNaN(v) ? 0 : Math.round(v * 100) / 100;
-                  if (!v) return 0;
-                  const parsed = parseFloat(String(v).replace(',', '.'));
-                  return isNaN(parsed) ? 0 : Math.round(parsed * 100) / 100;
-                };
-                const currentKm = parseVal(kmRodado);
-                const prevKm = prevKmLog ? parseVal(prevKmLog.kmRodado) : 0;
+                const currentKm = parseNum(kmRodado);
+                const prevKm = prevKmLog ? parseNum(prevKmLog.kmRodado) : 0;
                 const deductedKm = Math.round(Math.max(0, currentKm - prevKm) * 100) / 100;
-                const removedZeroKm = Math.round(currentKm / 10);
 
                 return (
                   <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center z-[100] p-4 pb-[calc(env(safe-area-inset-bottom)+24px)] animate-fadeIn">
@@ -6964,28 +7072,59 @@ export default function App() {
                       {/* Body Message */}
                       <div className="text-sm text-zinc-200 leading-relaxed space-y-3 bg-zinc-900/60 p-4 rounded-xl border border-zinc-800">
                         <p>
-                          Você informou <span className="font-bold text-red-400 text-base">{kmRodado} KM</span> para hoje.
+                          Você informou <span className="font-bold text-red-400 text-base">{currentKm} KM</span> para hoje.
                         </p>
 
-                        {prevKmLog ? (
+                        {prevKmLog && prevKm > 0 ? (
                           <p className="text-xs sm:text-sm text-zinc-300">
-                            No registro anterior ({prevKmLog.date.split('-').reverse().join('/')}), constavam <span className="font-bold text-emerald-400">{prevKm} KM</span>.
-                            <br /><br />
-                            {prevKm > 0 ? (
-                              <>
-                                Você pode <span className="font-bold text-emerald-400">abater os {prevKm} KM</span> do dia anterior (ficando <span className="font-bold text-emerald-300">{deductedKm} KM</span>), ou confirmar se <span className="font-bold text-red-400">zerou o odômetro</span>.
-                              </>
+                            {isImmediatePrev ? (
+                              <>No registro anterior ({prevKmLog.date.split('-').reverse().join('/')}), constavam <span className="font-bold text-emerald-400">{prevKm} KM</span>.</>
                             ) : (
-                              <>
-                                Você pode confirmar se <span className="font-bold text-red-400">zerou o odômetro</span>.
-                              </>
+                              <>No último dia registrado com rodagem ({prevKmLog.date.split('-').reverse().join('/')}), constavam <span className="font-bold text-emerald-400">{prevKm} KM</span>.</>
                             )}
+                            <br /><br />
+                            Você pode <span className="font-bold text-emerald-400">abater os {prevKm} KM</span> (salvando <span className="font-bold text-emerald-300">{deductedKm} KM</span> hoje), ou confirmar se <span className="font-bold text-red-400">zerou o odômetro</span>.
                           </p>
                         ) : (
                           <p className="text-xs sm:text-sm text-zinc-300">
-                            Você tem certeza que este valor está correto e zerou o odômetro no dia anterior?
+                            No registro anterior ({prevKmLog ? prevKmLog.date.split('-').reverse().join('/') : 'não localizado'}), constavam <span className="font-bold text-zinc-400">0 KM</span>.
+                            <br /><br />
+                            Você pode confirmar se <span className="font-bold text-red-400">zerou o odômetro</span> ou informar abaixo um valor anterior para abater.
                           </p>
                         )}
+
+                        {/* Abatimento manual / personalizado de KM */}
+                        <div className="bg-zinc-950/70 p-3 rounded-xl border border-zinc-800 space-y-2 mt-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-bold text-zinc-400">Abater valor anterior manualmente:</span>
+                            {customManualDeductKm && parseNum(customManualDeductKm) > 0 && parseNum(customManualDeductKm) < currentKm && (
+                              <span className="text-emerald-400 font-mono text-xs font-bold">
+                                Restará: {Math.round(currentKm - parseNum(customManualDeductKm))} KM
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex gap-2">
+                            <input
+                              type="number"
+                              placeholder="KM a abater (ex: 300)"
+                              value={customManualDeductKm}
+                              onChange={(e) => setCustomManualDeductKm(e.target.value)}
+                              className="flex-1 bg-[#11141a] border border-zinc-800 rounded-lg text-xs py-2 px-2.5 font-mono text-zinc-100 focus:outline-none focus:border-emerald-500"
+                            />
+                            {parseNum(customManualDeductKm) > 0 && parseNum(customManualDeductKm) < currentKm && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const val = Math.round(currentKm - parseNum(customManualDeductKm));
+                                  executeSaveLog(targetD, true, val);
+                                }}
+                                className="px-3 py-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-xs rounded-lg transition-all shrink-0 cursor-pointer shadow-md shadow-emerald-500/20"
+                              >
+                                Salvar {Math.round(currentKm - parseNum(customManualDeductKm))} KM
+                              </button>
+                            )}
+                          </div>
+                        </div>
                       </div>
 
                       {/* Action Buttons */}
@@ -6996,7 +7135,8 @@ export default function App() {
                             onClick={() => executeSaveLog(targetD, true, deductedKm)}
                             className="py-3 px-4 bg-emerald-500 hover:bg-emerald-600 text-zinc-950 font-extrabold text-xs sm:text-sm rounded-xl transition-all cursor-pointer shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-1.5"
                           >
-                            <span>Abater {prevKm} KM ({deductedKm} KM)</span>
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Abater {prevKm} KM (Salvar {deductedKm} KM)</span>
                           </button>
                         )}
 
@@ -7005,13 +7145,16 @@ export default function App() {
                           onClick={() => executeSaveLog(targetD, true)}
                           className="py-3 px-4 bg-red-500 hover:bg-red-600 text-zinc-950 font-extrabold text-xs sm:text-sm rounded-xl transition-all cursor-pointer shadow-lg shadow-red-500/20 text-center"
                         >
-                          Sim, Zerei ({kmRodado} KM)
+                          Sim, Zerei ({currentKm} KM)
                         </button>
 
                         <button
                           type="button"
-                          onClick={() => setConfirmHighKmPrompt(false)}
-                          className={`py-3 px-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold text-xs sm:text-sm rounded-xl transition-all cursor-pointer text-center ${(!prevKmLog || prevKm <= 0) ? 'col-span-1 sm:col-span-2' : ''}`}
+                          onClick={() => {
+                            setConfirmHighKmPrompt(false);
+                            setCustomManualDeductKm('');
+                          }}
+                          className={`py-3 px-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold text-xs sm:text-sm rounded-xl transition-all cursor-pointer text-center ${(!prevKmLog || prevKm <= 0) ? '' : 'sm:col-span-2'}`}
                         >
                           Corrigir Manualmente
                         </button>
@@ -9232,6 +9375,25 @@ export default function App() {
                         <Search className={`w-3.5 h-3.5 ${isFetchingFipe ? 'animate-spin' : ''}`} />
                         <span>{isFetchingFipe ? 'Buscando...' : 'Buscar FIPE'}</span>
                       </button>
+                    </div>
+
+                    {/* Seletor de Mês/Ano Retroativo FIPE */}
+                    <div className="flex items-center gap-2 pt-1">
+                      <div className="flex items-center gap-1.5 bg-[#141822] border border-zinc-750 rounded-xl px-2.5 py-1.5 flex-1">
+                        <CalendarIcon className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        <select
+                          value={selectedFipeRefId}
+                          onChange={(e) => handleHistoricalFipeFetch(e.target.value)}
+                          disabled={isFetchingFipe}
+                          className="bg-transparent text-xs text-zinc-200 outline-none w-full cursor-pointer font-medium"
+                        >
+                          {fipeReferences.map((ref) => (
+                            <option key={ref.id} value={ref.id} className="bg-[#141822] text-zinc-200">
+                              Mês Referência: {ref.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     </div>
 
                     {/* Input Field com Valor Formatado */}
