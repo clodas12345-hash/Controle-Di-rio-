@@ -25,6 +25,7 @@ export interface DailyLog {
   id: string; // YYYY-MM-DD
   date: string; // YYYY-MM-DD
   isDayOff: boolean;
+  isOff?: boolean;
   
   // Rodagem & Bateria
   sobrouBateria: number | null; // %
@@ -68,6 +69,7 @@ export interface CarProfile {
   manufactureYear: string;
   color: string;
   ownershipType: 'alugado' | 'proprio' | 'financiado';
+  tipoPropriedade?: string;
   currentKm: number;
   batteryCapacityKwh: number;
   estimatedAutonomyKm: number;

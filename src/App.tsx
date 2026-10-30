@@ -120,6 +120,7 @@ interface DailyLog {
   id: string; // YYYY-MM-DD
   date: string; // YYYY-MM-DD
   isDayOff: boolean;
+  isOff?: boolean;
   
   // Rodagem & Bateria
   sobrouBateria: number | null; // %
@@ -163,17 +164,22 @@ interface CarProfile {
   manufactureYear: string;
   color: string;
   ownershipType: 'alugado' | 'proprio' | 'financiado';
+  tipoPropriedade?: string;
   currentKm: number;
   batteryCapacityKwh: number;
   estimatedAutonomyKm: number;
   kwhCostRate: number;
   rentalOrWeeklyRate: number;
   monthlyCarExpense: number; // Despesa total com o carro no mês (padrão: R$ 7.000,00)
-  workScheduleType: 'mon_to_sat_sundays_off' | 'custom_calendar'; 
+  workScheduleType: 'mon_to_sat_sundays_off' | 'custom_calendar' | string; 
   customWorkDays?: { [monthKey: string]: number[] }; // monthKey like '2024-08', value is array of day numbers
   insurerName: string;
   insurancePolicyNumber: string;
+  insurancePolicyPdfUrl?: string;
+  insurancePolicyPdfName?: string;
   nextMaintenanceKm: string;
+  maintenanceIntervalKm?: number;
+  maintenanceAlertThresholdKm?: number;
   fipeValue?: number;
   notes: string;
 }
@@ -2023,7 +2029,11 @@ export default function App() {
         
         // Solicitar permissão
         const status = await LocalNotifications.requestPermissions();
-        setNotificationPermission(status.display);
+        if (status.display === 'granted' || status.display === 'denied' || status.display === 'prompt') {
+          setNotificationPermission(status.display);
+        } else {
+          setNotificationPermission((status.display as string) === 'granted' ? 'granted' : 'denied');
+        }
         
         // Criar canal se permissão concedida
         if (status.display === 'granted') {
@@ -2939,8 +2949,8 @@ export default function App() {
   // Handle auto-calculation of Energy Cost
   useEffect(() => {
     const sobrouNum = parseFloat(String(sobrouBateria).replace(',', '.'));
-    const capNum = parseFloat(String(capacidadeBateria).replace(',', '.')) || parseFloat(carProfile.batteryCapacityKwh) || (carProfile.vehicleType === 'eletrico' ? 53.6 : 50);
-    const valKwhNum = parseFloat(String(valorKwh).replace(',', '.')) || parseFloat(carProfile.kwhCostRate) || (carProfile.vehicleType === 'eletrico' ? 1.05 : 5.80);
+    const capNum = parseFloat(String(capacidadeBateria).replace(',', '.')) || parseFloat(String(carProfile.batteryCapacityKwh)) || (carProfile.vehicleType === 'eletrico' ? 53.6 : 50);
+    const valKwhNum = parseFloat(String(valorKwh).replace(',', '.')) || parseFloat(String(carProfile.kwhCostRate)) || (carProfile.vehicleType === 'eletrico' ? 1.05 : 5.80);
     const kmNum = parseFloat(String(kmRodado).replace(',', '.'));
 
     if (!isEnergyCostOverridden) {
@@ -3336,8 +3346,8 @@ export default function App() {
     
     // Only trigger if KM is valid and remaining battery is not provided or 0
     if (num > 0 && (!sobrouVal || isNaN(sobrouNum) || sobrouNum === 0)) {
-      const capNum = parseFloat(String(capacidadeBateria).replace(',', '.')) || parseFloat(carProfile.batteryCapacityKwh) || (carProfile.vehicleType === 'eletrico' ? 53.6 : 50);
-      const valKwhNum = parseFloat(String(valorKwh).replace(',', '.')) || parseFloat(carProfile.kwhCostRate) || (carProfile.vehicleType === 'eletrico' ? 1.05 : 5.80);
+      const capNum = parseFloat(String(capacidadeBateria).replace(',', '.')) || parseFloat(String(carProfile.batteryCapacityKwh)) || (carProfile.vehicleType === 'eletrico' ? 53.6 : 50);
+      const valKwhNum = parseFloat(String(valorKwh).replace(',', '.')) || parseFloat(String(carProfile.kwhCostRate)) || (carProfile.vehicleType === 'eletrico' ? 1.05 : 5.80);
       const autonomy = carProfile.estimatedAutonomyKm || (carProfile.vehicleType === 'eletrico' ? 300 : 500);
       const consumedPercent = Math.min(100, Math.round((num / autonomy) * 100));
       const remainingPercent = Math.max(0, 100 - consumedPercent);
@@ -3424,8 +3434,8 @@ export default function App() {
 
     const parsedSobrou = sobrouBateria === '' || sobrouBateria === null || sobrouBateria === undefined ? null : parseNum(sobrouBateria);
     let finalCustoEnergia = parseNum(custoEnergia);
-    const parsedValKwh = parseNum(valorKwh) || parseFloat(carProfile.kwhCostRate) || 1.05;
-    const parsedCap = parseNum(capacidadeBateria) || parseFloat(carProfile.batteryCapacityKwh) || 53.6;
+    const parsedValKwh = parseNum(valorKwh) || parseFloat(String(carProfile.kwhCostRate)) || 1.05;
+    const parsedCap = parseNum(capacidadeBateria) || parseFloat(String(carProfile.batteryCapacityKwh)) || 53.6;
 
     // Recalculate energy cost if customKm was applied or if not overridden and zero
     if (parsedKm > 0 && (!isEnergyCostOverridden || customKm !== undefined) && (finalCustoEnergia <= 0 || customKm !== undefined)) {
@@ -4354,12 +4364,11 @@ export default function App() {
               id="btn-gkd-app-logo"
               type="button"
               onClick={() => { setHelpActiveTab('geral'); setIsHelpModalOpen(true); }}
-              className="p-1 bg-white hover:bg-zinc-100 border border-zinc-700/80 hover:border-emerald-500/60 rounded-xl transition-all shadow-md hover:shadow-emerald-500/20 group cursor-pointer shrink-0"
+              className="p-0.5 bg-white border border-zinc-300 rounded-xl transition-all shadow-md hover:shadow-emerald-500/20 group cursor-pointer shrink-0 hover:scale-105"
               title="Clique para ver Detalhes e Versão do Aplicativo (GKD Mobility)"
             >
               <GkdMobilityLogo size="sm" />
             </button>
-
             {(() => {
               const effectiveCost = getEffectiveMonthlyCost(selectedYear, selectedMonth);
               const customDays = carProfile.customWorkDays?.[`${selectedYear}-${String(selectedMonth).padStart(2, '0')}`];
@@ -8569,10 +8578,9 @@ export default function App() {
             <div className="p-5 border-b border-zinc-800 bg-zinc-950 flex flex-col gap-4 shrink-0">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="p-1 bg-white border border-zinc-700/80 rounded-xl shadow-md shrink-0">
+                  <div className="shrink-0">
                     <GkdMobilityLogo size="sm" />
-                  </div>
-                  <div>
+                  </div>                  <div>
                     <h2 className="text-base sm:text-lg font-black text-zinc-100 flex items-center gap-2">
                       Central de Ajuda, Guia & Configurações
                       <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">
@@ -9175,10 +9183,9 @@ export default function App() {
             {/* Modal Header */}
             <div className="p-6 border-b border-zinc-800 bg-zinc-950 flex items-center justify-between">
               <div className="flex items-center gap-3.5">
-                <div className="p-1.5 bg-white border border-zinc-700/80 rounded-2xl shadow-md shrink-0">
+                <div className="shrink-0">
                   <GkdMobilityLogo size="sm" />
-                </div>
-                <div>
+                </div>                <div>
                   <h2 className="text-lg sm:text-xl font-black text-zinc-100 flex items-center gap-2">
                     Dados do Veículo & Rateio
                     <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-0.5 rounded-full font-bold">

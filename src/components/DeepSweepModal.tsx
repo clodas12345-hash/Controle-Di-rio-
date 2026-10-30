@@ -93,10 +93,7 @@ export const DeepSweepModal: React.FC<DeepSweepModalProps> = ({
 
         {/* Header */}
         <div className="flex items-center gap-4 border-b border-zinc-800/80 pb-5">
-          <div className="p-1.5 bg-white rounded-2xl border border-zinc-300 shadow-md shrink-0">
-            <GkdMobilityLogo size="md" />
-          </div>
-          <div>
+          <GkdMobilityLogo size="md" />          <div>
             <div className="flex items-center gap-2">
               <h2 className="text-xl sm:text-2xl font-black text-zinc-100 tracking-tight">
                 Auditoria do Sistema

@@ -17,9 +17,10 @@ process.on("unhandledRejection", (reason, promise) => {
 });
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : (process.env.DEFAULT_APP_PORT ? parseInt(process.env.DEFAULT_APP_PORT, 10) : 8080);
+const PORT = 3000;
 
 // 1. START LISTENING INSTANTLY so Cloud Run health checks never timeout on boot
+console.log(`[server] Attempting to listen on port ${PORT}`);
 const server = app.listen(PORT, "0.0.0.0", () => {
   console.log(`[server] Express listening instantly on port ${PORT}`);
 });

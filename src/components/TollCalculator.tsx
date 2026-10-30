@@ -64,9 +64,7 @@ export const TollCalculator: React.FC<TollCalculatorProps> = ({
       <div className="bg-[#11141a] border border-zinc-800 rounded-2xl w-full max-w-xs overflow-hidden shadow-2xl flex flex-col">
         <div className="p-4 border-b border-zinc-800 bg-zinc-900/50 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="p-1 bg-white border border-zinc-700 rounded-lg shadow-sm shrink-0">
-              <GkdMobilityLogo size="xs" />
-            </div>
+            <GkdMobilityLogo size="xs" />
             <h3 className="text-xs font-bold text-zinc-100 uppercase tracking-wider">Calculadora de Pedágios</h3>
           </div>
           <div className="flex items-center gap-1">

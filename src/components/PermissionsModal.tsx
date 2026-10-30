@@ -249,10 +249,7 @@ export function PermissionsModal({ isOpen, onComplete }: PermissionsModalProps) 
         
         {/* Top Header */}
         <div className="p-5 border-b border-zinc-800/80 bg-zinc-900/50 flex items-center gap-3.5 shrink-0">
-          <div className="p-2 bg-zinc-900 border border-zinc-700/80 rounded-xl flex items-center justify-center shadow-sm shrink-0">
-            <GkdMobilityLogo className="w-9 h-9 rounded-lg" />
-          </div>
-          <div>
+          <GkdMobilityLogo size="sm" />          <div>
             <div className="flex items-center gap-2">
               <h2 className="text-base font-bold text-zinc-100">Permissões e Notificações do Sistema</h2>
               <span className="px-2 py-0.5 text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-full">

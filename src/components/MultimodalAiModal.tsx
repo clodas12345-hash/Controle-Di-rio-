@@ -23,6 +23,7 @@ import {
   ChevronRight,
   Info
 } from 'lucide-react';
+import { GkdMobilityLogo } from './GkdMobilityLogo';
 import { 
   processInputFile, 
   captureNativeCameraPhoto, 
@@ -568,9 +569,7 @@ export const MultimodalAiModal: React.FC<MultimodalAiModalProps> = ({
         {/* Top Header */}
         <div className="p-4 sm:p-5 bg-gradient-to-r from-emerald-950/50 via-zinc-900 to-zinc-900 border-b border-zinc-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-xl shadow-lg shadow-emerald-500/10">
-              <Sparkles className="w-5 h-5" />
-            </div>
+            <GkdMobilityLogo size="sm" />
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-base font-bold text-zinc-100">
@@ -955,7 +954,7 @@ export const MultimodalAiModal: React.FC<MultimodalAiModalProps> = ({
             {!extractionResult ? (
               <button
                 type="button"
-                onClick={handleProcessWithAi}
+                onClick={() => handleProcessWithAi()}
                 disabled={isProcessing}
                 className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black rounded-xl text-xs transition-all shadow-lg shadow-emerald-500/20 flex items-center gap-2 disabled:opacity-50"
               >
