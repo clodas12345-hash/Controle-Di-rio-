@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import appLogo from '../assets/logo.png';
+
 
 interface GkdMobilityLogoProps {
   className?: string;
@@ -26,7 +26,7 @@ export const GkdMobilityLogo: React.FC<GkdMobilityLogoProps> = ({
     <div className={`relative inline-flex items-center justify-center select-none overflow-hidden bg-white shadow-md border border-zinc-300 ${rounded ? 'rounded-xl' : ''} ${dimensions} ${className}`}>
       {!imgError ? (
         <img
-          src={appLogo}
+          src="/logo.png"
           alt="GKD Mobility - Controle Diário"
           referrerPolicy="no-referrer"
           onError={() => setImgError(true)}
