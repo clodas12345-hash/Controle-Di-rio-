@@ -4878,6 +4878,9 @@ export default function App() {
                     <td className="py-3 px-3 text-right text-zinc-200">
                       {formatKM(totalKM)}
                     </td>
+                    <td className="py-3 px-3 text-right text-zinc-500 font-sans text-[10px]">
+                      -
+                    </td>
                     <td className="py-3 px-3 text-right text-amber-400">
                       {formatBRL(totalEnergyCost)}
                     </td>
