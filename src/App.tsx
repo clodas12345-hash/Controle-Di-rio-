@@ -1077,6 +1077,11 @@ export default function App() {
     }
   }, [sweepNotification]);
 
+  // Automatic 100% rate distribution across all logs when fixed expenses or working days change
+  useEffect(() => {
+    setLogs(prevLogs => recalculateAllMonthsRates(prevLogs, fixedExpensesByMonth, carProfile));
+  }, [fixedExpensesByMonth, carProfile.monthlyCarExpense, carProfile.customWorkDays]);
+
   // Handle Excel Data Import
   const handleExcelImport = (importedLogs: DailyLog[], importedFixedExpenses: FixedExpense[] = [], importedCarProfile?: any) => {
     if (!importedLogs || importedLogs.length === 0) {
@@ -6024,74 +6029,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Smart Rateio & Sync with Entradas Box */}
-            {(() => {
-              const monthKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
-              const customDays = carProfile.customWorkDays?.[monthKey] || [];
-              const rateInfo = getMonthWorkDaysAndRate(selectedYear, selectedMonth, getEffectiveMonthlyCost(selectedYear, selectedMonth), customDays);
-              const isAlreadySynced = Math.abs(totals.totalCarRental - (rateInfo.dailyRate * rateInfo.workDaysCount)) < 2.0;
 
-              return (
-                <div className="bg-gradient-to-r from-purple-950/40 via-blue-950/30 to-zinc-950 border border-purple-900/50 p-4 rounded-2xl space-y-3 shadow-lg">
-                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-purple-900/40 pb-2.5">
-                    <div className="flex items-center gap-2">
-                      <div className="p-1.5 bg-purple-500/20 text-purple-300 rounded-lg border border-purple-500/30">
-                        <Coins className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <span className="text-xs font-bold text-zinc-100 uppercase tracking-wider block">
-                          Rateio Automático das Contas do Mês ({MONTH_NAMES[selectedMonth - 1]}/{selectedYear})
-                        </span>
-                        <span className="text-[10px] text-zinc-400">
-                          Jornada: Período Selecionado ({rateInfo.workDaysCount} dias) • Folgas ({rateInfo.offDaysCount} dias a R$ 0,00)
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="text-left sm:text-right">
-                      <span className="text-[10px] text-purple-300 uppercase font-bold block">Diária Calculada</span>
-                      <span className="text-base font-black font-mono text-purple-300">
-                        {formatBRL(rateInfo.dailyRate)} <span className="text-[10px] text-zinc-400 font-normal">/dia útil</span>
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
-                    <div className="bg-zinc-900/70 p-2 rounded-xl border border-zinc-800">
-                      <span className="text-[9px] text-zinc-400 uppercase block font-medium">Contas do Mês</span>
-                      <span className="text-xs font-bold text-zinc-100 font-mono">{formatBRL(rateInfo.monthlyTotalCost)}</span>
-                    </div>
-                    <div className="bg-zinc-900/70 p-2 rounded-xl border border-zinc-800">
-                      <span className="text-[9px] text-zinc-400 uppercase block font-medium">Dias de Trabalho</span>
-                      <span className="text-xs font-bold text-emerald-400 font-mono">{rateInfo.workDaysCount} dias</span>
-                    </div>
-                    <div className="bg-zinc-900/70 p-2 rounded-xl border border-zinc-800">
-                      <span className="text-[9px] text-zinc-400 uppercase block font-medium">Dias de Folga</span>
-                      <span className="text-xs font-bold text-amber-400 font-mono">{rateInfo.offDaysCount} dias (R$ 0,00)</span>
-                    </div>
-                    <div className="bg-purple-950/40 p-2 rounded-xl border border-purple-900/50">
-                      <span className="text-[9px] text-purple-300 uppercase block font-medium">Soma no Mês</span>
-                      <span className="text-xs font-bold text-purple-300 font-mono">{formatBRL(rateInfo.dailyRate * rateInfo.workDaysCount)}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
-                    <div className="text-[10px] text-zinc-400 text-center sm:text-left">
-                      Fórmula exata: <strong className="text-zinc-200">{formatBRL(rateInfo.monthlyTotalCost)} ÷ {rateInfo.workDaysCount} dias</strong> = <strong className="text-emerald-400">{formatBRL(rateInfo.dailyRate)}/dia</strong> nos 26 dias úteis.
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => handleApplyMonthlyCarRateToAllDays(selectedMonth, selectedYear, totalFixedExpenses > 0 ? totalFixedExpenses : undefined)}
-                      className="w-full sm:w-auto px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold rounded-xl text-xs transition-all shadow-md shadow-purple-950/50 flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
-                    >
-                      <Zap className="w-4 h-4 text-amber-300 animate-pulse" />
-                      <span>{isAlreadySynced ? `Sincronizado: Aplicar ${formatBRL(rateInfo.dailyRate)}/dia nas Entradas` : `⚡ Sincronizar e Aplicar ${formatBRL(rateInfo.dailyRate)}/dia nas Entradas`}</span>
-                    </button>
-                  </div>
-                </div>
-              );
-            })()}
 
           </div>
         </div>
