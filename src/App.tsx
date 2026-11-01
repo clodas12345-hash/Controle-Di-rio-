@@ -251,14 +251,24 @@ export const BLANK_CAR_PROFILE: CarProfile = {
 };
 
 // Helper to calculate working days and daily car rate
-export const getMonthWorkDaysAndRate = (year: number, month: number, monthlyTotalCost: number = 0, customWorkDays?: number[]) => {
+export const getMonthWorkDaysAndRate = (year: number, month: number, monthlyTotalCost: number = 0, customWorkDays?: number[], monthLogs?: DailyLog[]) => {
   const daysInMonth = new Date(year, month, 0).getDate();
   let workDaysCount = 0;
 
-  if (customWorkDays && customWorkDays.length > 0) {
+  if (monthLogs && monthLogs.length > 0) {
+    for (let day = 1; day <= daysInMonth; day++) {
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const dateStr = `${year}-${pad(month)}-${pad(day)}`;
+      const log = monthLogs.find(l => l.date === dateStr);
+      const isOff = log ? Boolean(log.isDayOff) : (new Date(year, month - 1, day).getDay() === 0);
+      if (!isOff) {
+        workDaysCount++;
+      }
+    }
+  } else if (customWorkDays && customWorkDays.length > 0) {
     workDaysCount = customWorkDays.length;
   } else {
-    // Default: Monday to Saturday
+    // Default: Monday to Saturday (or all days minus Sundays)
     for (let day = 1; day <= daysInMonth; day++) {
       const dayOfWeek = new Date(year, month - 1, day).getDay(); // 0 = Domingo
       if (dayOfWeek !== 0) {
@@ -279,6 +289,33 @@ export const getMonthWorkDaysAndRate = (year: number, month: number, monthlyTota
     dailyRate,
     dailyRateExact
   };
+};
+
+export const recalculateAllMonthsRates = (
+  allLogs: DailyLog[], 
+  fixedMap: Record<string, FixedExpense[]>, 
+  carProf: CarProfile
+): DailyLog[] => {
+  if (!allLogs || allLogs.length === 0) return allLogs;
+
+  return allLogs.map(log => {
+    const [y, m, d] = log.date.split('-').map(Number);
+    if (!y || !m || !d) return log;
+
+    const mKeyPadded = `${y}-${String(m).padStart(2, '0')}`;
+    const mKeyUnpadded = `${y}-${m}`;
+    const monthExpenses = fixedMap[mKeyPadded] || fixedMap[mKeyUnpadded] || [];
+    const monthFixedSum = monthExpenses.reduce((sum, item) => sum + item.value, 0);
+    const costToUse = monthFixedSum > 0 ? monthFixedSum : (carProf.monthlyCarExpense || 0);
+
+    const rateInfo = getMonthWorkDaysAndRate(y, m, costToUse, carProf.customWorkDays?.[mKeyPadded], allLogs);
+    const expectedDiaria = log.isDayOff ? 0 : rateInfo.dailyRate;
+
+    return {
+      ...log,
+      diariaCarro: expectedDiaria
+    };
+  });
 };
 
 const MONTH_NAMES = [
@@ -2246,6 +2283,30 @@ export default function App() {
       }
     }
   }, [logs]);
+
+  // Auto-recalculate diariaCarro across all months automatically based on total monthly fixed expenses and working days (!isDayOff)
+  useEffect(() => {
+    if (!logs || logs.length === 0) return;
+    if ((window as any).isClearingAll) return;
+
+    const recalculated = recalculateAllMonthsRates(logs, fixedExpensesByMonth, carProfile);
+    
+    let changed = false;
+    if (recalculated.length !== logs.length) {
+      changed = true;
+    } else {
+      for (let i = 0; i < logs.length; i++) {
+        if (Math.abs((recalculated[i].diariaCarro || 0) - (logs[i].diariaCarro || 0)) > 0.01) {
+          changed = true;
+          break;
+        }
+      }
+    }
+
+    if (changed) {
+      setLogs(recalculated);
+    }
+  }, [fixedExpensesByMonth, carProfile.monthlyCarExpense, carProfile.customWorkDays, logs.map(l => `${l.date}:${l.isDayOff}`).join(',')]);
 
   // Auto-propagation of fixed expenses when a new month is visited
   useEffect(() => {
@@ -4571,41 +4632,6 @@ export default function App() {
 
           {isHistorySectionOpen && (
             <div className="p-6 border-t border-zinc-800/80 space-y-4">
-              {/* Quick Sync Notice if Contas differs from table */}
-              {(() => {
-                const monthKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
-                const customDays = carProfile.customWorkDays?.[monthKey] || [];
-                const rateInfo = getMonthWorkDaysAndRate(selectedYear, selectedMonth, getEffectiveMonthlyCost(selectedYear, selectedMonth), customDays);
-                const isDiscrepancy = Math.abs(totals.totalCarRental - (rateInfo.dailyRate * rateInfo.workDaysCount)) > 3.0;
-
-                if (!isDiscrepancy || isAllYear) return null;
-
-                return (
-                  <div className="bg-gradient-to-r from-purple-950/60 via-indigo-950/40 to-zinc-950 border border-purple-800/50 p-3.5 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-3 text-xs shadow-md">
-                    <div className="flex items-center gap-2.5">
-                      <Zap className="w-4 h-4 text-amber-400 shrink-0 animate-pulse" />
-                      <div className="space-y-0.5">
-                        <span className="font-bold text-zinc-100 block">
-                          Sincronizar Rateio de Contas: {formatBRL(rateInfo.monthlyTotalCost)} ÷ {rateInfo.workDaysCount} dias = {formatBRL(rateInfo.dailyRate)}/dia
-                        </span>
-                        <span className="text-[11px] text-zinc-400">
-                          A coluna de Diária Carro na tabela está somando {formatBRL(totals.totalCarRental)}. Clique para calibrar com o total de Contas ({formatBRL(rateInfo.monthlyTotalCost)}).
-                        </span>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => handleApplyMonthlyCarRateToAllDays(selectedMonth, selectedYear, totalFixedExpenses > 0 ? totalFixedExpenses : undefined)}
-                      className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg text-[11px] transition-all shadow-md shrink-0 flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Zap className="w-3 h-3 text-amber-300" />
-                      <span>Calibrar para {formatBRL(rateInfo.dailyRate)}/dia</span>
-                    </button>
-                  </div>
-                );
-              })()}
-
               <div className="overflow-x-auto overflow-y-auto max-h-[550px] relative rounded-xl scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent outline-none focus:outline-none">
             <table className="w-full text-left border-collapse text-xs min-w-[1200px] outline-none">
               <thead>
@@ -9645,22 +9671,7 @@ export default function App() {
                             </div>
                           </div>
 
-                          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 border-t border-zinc-850">
-                            <span className="text-[10px] text-zinc-400 text-center sm:text-left">
-                              Cálculo: <strong className="text-zinc-200">{formatBRL(info.monthlyTotalCost)} ÷ {info.workDaysCount} dias</strong> = <strong className="text-emerald-400">{formatBRL(info.dailyRate)}</strong>
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                handleApplyMonthlyCarRateToAllDays(selectedMonth, selectedYear, currentCost);
-                                setIsCarModalOpen(false);
-                              }}
-                              className="w-full sm:w-auto px-3.5 py-1.5 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg text-xs transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                            >
-                              <Zap className="w-3.5 h-3.5" />
-                              <span>Aplicar em todos os lançamentos</span>
-                            </button>
-                          </div>
+
                         </div>
                       </>
                     );
