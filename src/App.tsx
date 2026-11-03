@@ -75,7 +75,8 @@ import {
   Clipboard,
   Copy,
   RefreshCw,
-  Eye
+  Eye,
+  Filter
 } from 'lucide-react';
 import { DEFAULT_CAR_PROFILE, DEFAULT_FIXED_EXPENSES_BY_MONTH, DEFAULT_DAILY_LOGS } from './defaultBackupData';
 import { motion } from 'motion/react';
@@ -1376,6 +1377,9 @@ export default function App() {
   const [recompensasExtra, setRecompensasExtra] = useState('');
   const [outrasFontes, setOutrasFontes] = useState('');
   const [exibirNoGeral, setExibirNoGeral] = useState(true);
+  const [selectedExpenseTopicFilter, setSelectedExpenseTopicFilter] = useState<string>('all');
+  const [filterStartDate, setFilterStartDate] = useState<string>('');
+  const [filterEndDate, setFilterEndDate] = useState<string>('');
 
   // Auto-calculated state flags
   const [isEnergyCostOverridden, setIsEnergyCostOverridden] = useState(false);
@@ -2535,45 +2539,110 @@ export default function App() {
     const val = parseNum(newFixedValue);
     if (isNaN(val) || val <= 0) return;
 
-    if (editingFixedId) {
-      setFixedExpensesForCurrentMonth(prev => prev.map(item => item.id === editingFixedId ? {
-        ...item,
-        name: newFixedName,
-        value: val,
-        installments: newFixedInstallments.trim() || undefined,
-        startDate: newFixedStartDate.trim() || undefined
-      } : item));
-      setSweepNotification(`Despesa "${newFixedName}" atualizada com sucesso!`);
-    } else {
-      const normNew = normalizeExpenseName(newFixedName);
-      const alreadyExists = fixedExpenses.some(item => normalizeExpenseName(item.name) === normNew);
-      if (alreadyExists) {
-        setSweepNotification(`A despesa fixa "${newFixedName}" já existe neste mês. Novo lançamento desconsiderado.`);
-        setTimeout(() => setSweepNotification(null), 5000);
-        setNewFixedName('');
-        setNewFixedValue('');
-        setNewFixedInstallments('');
-        setNewFixedStartDate('');
-        setIsAddingFixed(false);
-        return;
-      }
+    const oldExpense = editingFixedId ? fixedExpenses.find(i => i.id === editingFixedId) : null;
+    const oldNameNorm = oldExpense ? normalizeExpenseName(oldExpense.name) : '';
+    const newNameNorm = normalizeExpenseName(newFixedName);
 
-      const newExpense: FixedExpense = {
-        id: String(Date.now()),
-        name: newFixedName,
-        value: val,
-        installments: newFixedInstallments.trim() || undefined,
-        startDate: newFixedStartDate.trim() || undefined
-      };
-      setFixedExpensesForCurrentMonth(prev => [...prev, newExpense]);
-      setSweepNotification(`Despesa "${newFixedName}" adicionada com sucesso!`);
-    }
+    setFixedExpensesByMonth(prev => {
+      const next = { ...prev };
+      const allMonthKeys = new Set([...Object.keys(prev), currentMonthKey]);
+
+      allMonthKeys.forEach(mKey => {
+        const [yStr, mStr] = mKey.split('-');
+        const y = parseInt(yStr, 10);
+        const m = parseInt(mStr, 10);
+        if (isNaN(y) || isNaN(m)) return;
+
+        // Past months unchanged
+        const isPast = y < selectedYear || (y === selectedYear && m < selectedMonth);
+        if (isPast) return;
+
+        let monthList = [...(next[mKey] || [])];
+        const monthOffset = (y - selectedYear) * 12 + (m - selectedMonth);
+
+        const calculatedInstallments = monthOffset === 0 
+          ? (newFixedInstallments.trim() || undefined)
+          : incrementInstallment(newFixedInstallments.trim(), monthOffset);
+
+        if (editingFixedId) {
+          const idx = monthList.findIndex(item => item.id === editingFixedId || normalizeExpenseName(item.name) === oldNameNorm);
+          if (idx !== -1) {
+            if (calculatedInstallments === undefined && newFixedInstallments.trim() !== '' && parseInstallmentInfo(newFixedInstallments)) {
+              // Installment limit reached for this future month -> remove
+              monthList.splice(idx, 1);
+            } else {
+              monthList[idx] = {
+                ...monthList[idx],
+                name: newFixedName,
+                value: val,
+                installments: calculatedInstallments,
+                startDate: newFixedStartDate.trim() || undefined
+              };
+            }
+          } else if (y > selectedYear || (y === selectedYear && m > selectedMonth)) {
+            const alreadyExists = monthList.some(item => normalizeExpenseName(item.name) === newNameNorm);
+            if (!alreadyExists) {
+              if (calculatedInstallments !== undefined || !newFixedInstallments.trim() || !parseInstallmentInfo(newFixedInstallments)) {
+                monthList.push({
+                  id: `fe-${y}-${m}-${Date.now()}`,
+                  name: newFixedName,
+                  value: val,
+                  installments: calculatedInstallments,
+                  startDate: newFixedStartDate.trim() || undefined
+                });
+              }
+            }
+          }
+        } else {
+          const alreadyExists = monthList.some(item => normalizeExpenseName(item.name) === newNameNorm);
+          if (!alreadyExists) {
+            if (calculatedInstallments !== undefined || !newFixedInstallments.trim() || !parseInstallmentInfo(newFixedInstallments)) {
+              monthList.push({
+                id: `fe-${y}-${m}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+                name: newFixedName,
+                value: val,
+                installments: calculatedInstallments,
+                startDate: newFixedStartDate.trim() || undefined
+              });
+            }
+          }
+        }
+
+        next[mKey] = monthList;
+      });
+
+      return next;
+    });
+
+    setTimeout(() => {
+      const currentList = fixedExpensesByMonth[currentMonthKey] || [];
+      const total = currentList.reduce((acc, curr) => acc + (curr.value || 0), 0);
+      setCarProfile(p => ({ ...p, monthlyCarExpense: total }));
+      
+      const customDays = carProfile.customWorkDays?.[currentMonthKey] || [];
+      const { dailyRate } = getMonthWorkDaysAndRate(selectedYear, selectedMonth, total, customDays);
+      setLogs(prevLogs => prevLogs.map(log => {
+        const [ly, lm, ld] = log.date.split('-').map(Number);
+        if (ly === selectedYear && lm === selectedMonth) {
+          const dayOfWeek = new Date(ly, lm - 1, ld).getDay();
+          const isOff = customDays.length > 0 ? !customDays.includes(ld) : dayOfWeek === 0;
+          return {
+            ...log,
+            diariaCarro: isOff ? 0 : dailyRate,
+            isDayOff: isOff
+          };
+        }
+        return log;
+      }));
+    }, 0);
 
     setNewFixedName('');
     setNewFixedValue('');
     setNewFixedInstallments('');
+    setNewFixedStartDate('');
     setEditingFixedId(null);
     setIsAddingFixed(false);
+    setSweepNotification(editingFixedId ? `Despesa "${newFixedName}" atualizada para este e futuros meses!` : `Despesa "${newFixedName}" adicionada com sucesso!`);
     setTimeout(() => setSweepNotification(null), 4000);
   };
 
@@ -2601,15 +2670,34 @@ export default function App() {
 
   const handleDeleteFixedExpense = (id: string) => {
     const itemToDelete = fixedExpenses.find(i => i.id === id);
-    setFixedExpensesForCurrentMonth(prev => {
-      const next = prev.filter(item => item.id !== id);
+    const deleteNameNorm = itemToDelete ? normalizeExpenseName(itemToDelete.name) : '';
+
+    setFixedExpensesByMonth(prev => {
+      const next = { ...prev };
+      const allMonthKeys = new Set([...Object.keys(prev), currentMonthKey]);
+
+      allMonthKeys.forEach(mKey => {
+        const [yStr, mStr] = mKey.split('-');
+        const y = parseInt(yStr, 10);
+        const m = parseInt(mStr, 10);
+        if (isNaN(y) || isNaN(m)) return;
+
+        // Past months unchanged
+        const isPast = y < selectedYear || (y === selectedYear && m < selectedMonth);
+        if (isPast) return;
+
+        const monthList = next[mKey] || [];
+        next[mKey] = monthList.filter(item => item.id !== id && normalizeExpenseName(item.name) !== deleteNameNorm);
+      });
+
       return next;
     });
+
     if (editingFixedId === id) {
       handleCancelFixedExpenseForm();
     }
     setConfirmingDeleteFixedId(null);
-    setSweepNotification(`Despesa "${itemToDelete?.name || 'fixa'}" excluída com sucesso!`);
+    setSweepNotification(`Despesa "${itemToDelete?.name || 'fixa'}" excluída deste e futuros meses!`);
     setTimeout(() => setSweepNotification(null), 4000);
   };
 
@@ -3224,75 +3312,7 @@ export default function App() {
     }
   };
 
-  // Batch apply calculated daily rate to all working days of a specific month
-  const handleApplyMonthlyCarRateToAllDays = (monthToApply: number, yearToApply: number, customMonthlyTotal?: number) => {
-    // If customMonthlyTotal not passed, check if there are fixed expenses in that month
-    const mKeyPadded = `${yearToApply}-${String(monthToApply).padStart(2, '0')}`;
-    const mKeyUnpadded = `${yearToApply}-${monthToApply}`;
-    const monthExpenses = fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || [];
-    const monthFixedSum = monthExpenses.reduce((sum, item) => sum + item.value, 0);
 
-    const costToUse = (typeof customMonthlyTotal === 'number' && customMonthlyTotal >= 0)
-      ? customMonthlyTotal
-      : (monthFixedSum > 0 ? monthFixedSum : (carProfile.monthlyCarExpense || 0));
-
-    const monthKey = `${yearToApply}-${String(monthToApply).padStart(2, '0')}`;
-    const customDays = carProfile.customWorkDays?.[monthKey] || [];
-
-    const { dailyRate, workDaysCount, monthlyTotalCost } = getMonthWorkDaysAndRate(yearToApply, monthToApply, costToUse, customDays);
-
-    // Update car profile monthly expense to match if synced
-    if (costToUse > 0) {
-      setCarProfile(prev => ({
-        ...prev,
-        monthlyCarExpense: costToUse
-      }));
-    }
-
-    setLogs(prevLogs => {
-      return prevLogs.map(log => {
-        const [y, m, d] = log.date.split('-').map(Number);
-        if (y === yearToApply && m === monthToApply) {
-          let isWorkingDay;
-          if (customDays.length > 0) {
-            isWorkingDay = customDays.includes(d);
-          } else {
-            isWorkingDay = new Date(y, m - 1, d).getDay() !== 0; // Default Mon-Sat
-          }
-
-          const isEletrico = carProfile.vehicleType === 'eletrico';
-          const valKwh = carProfile.kwhCostRate || (isEletrico ? 1.05 : 5.80);
-          const capBat = carProfile.batteryCapacityKwh || (isEletrico ? 53.6 : 50);
-          let newCusto = log.custoEnergia || 0;
-          
-          if ((log.kmRodado || 0) > 0) {
-            let consumedPercent = 0;
-            if (log.sobrouBateria !== null && log.sobrouBateria !== undefined && log.sobrouBateria >= 0 && log.sobrouBateria <= 100) {
-              consumedPercent = 100 - log.sobrouBateria;
-            } else {
-              consumedPercent = Math.min(95, ((log.kmRodado || 0) / (carProfile.estimatedAutonomyKm || (isEletrico ? 300 : 450))) * 100);
-            }
-            const energyConsumed = (consumedPercent / 100) * capBat;
-            newCusto = parseFloat((energyConsumed * valKwh).toFixed(2));
-          }
-
-          return {
-            ...log,
-            isDayOff: !isWorkingDay,
-            diariaCarro: isWorkingDay ? dailyRate : 0,
-            valorKwh: valKwh,
-            capacidadeBateria: capBat,
-            custoEnergia: newCusto,
-            veiculoNome: carProfile.modelName || ''
-          };
-        }
-        return log;
-      });
-    });
-
-    setSweepNotification(`Rateio de ${formatBRL(monthlyTotalCost)} dividido em ${workDaysCount} dias selecionados: diária de ${formatBRL(dailyRate)} sincronizada em ${MONTH_NAMES[monthToApply - 1]}/${yearToApply}!`);
-    setTimeout(() => setSweepNotification(null), 5000);
-  };
 
   // Batch clear car extra expenses for a specific month (e.g. phantom imported expenses)
   const handleClearMonthCarExpenses = (monthToClear: number, yearToClear: number) => {
@@ -5772,9 +5792,15 @@ export default function App() {
                       </div>
                       <div className="text-right space-y-0.5">
                         <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider block">Comprometimento</span>
-                        <span className={`text-xs font-extrabold font-mono ${totalGrossEarnings > 0 && (totalFixedExpenses / totalGrossEarnings) > 0.5 ? 'text-amber-500' : 'text-zinc-300'}`}>
-                          {totalGrossEarnings > 0 ? `${((totalFixedExpenses / totalGrossEarnings) * 100).toFixed(1)}% do faturamento` : '0%'}
-                        </span>
+                        {(() => {
+                          const denom = (currentMonthProj?.projGross && currentMonthProj.projGross > totalGrossEarnings) ? currentMonthProj.projGross : (totalGrossEarnings > 0 ? totalGrossEarnings : 1);
+                          const pct = (totalFixedExpenses / denom) * 100;
+                          return (
+                            <span className={`text-xs font-extrabold font-mono ${pct > 50 ? 'text-amber-500' : 'text-zinc-300'}`}>
+                              {pct.toFixed(1)}% do fat.
+                            </span>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>
@@ -6023,9 +6049,15 @@ export default function App() {
               </div>
               <div className="text-left sm:text-right space-y-0.5">
                 <span className="text-xs text-zinc-400 font-bold uppercase tracking-wider block">Comprometimento do Faturamento</span>
-                <span className={`text-sm font-extrabold font-mono ${totalGrossEarnings > 0 && (totalFixedExpenses / totalGrossEarnings) > 0.5 ? 'text-amber-400' : 'text-zinc-200'}`}>
-                  {totalGrossEarnings > 0 ? `${((totalFixedExpenses / totalGrossEarnings) * 100).toFixed(1)}% do faturamento realizado` : '0%'}
-                </span>
+                {(() => {
+                  const denom = (currentMonthProj?.projGross && currentMonthProj.projGross > totalGrossEarnings) ? currentMonthProj.projGross : (totalGrossEarnings > 0 ? totalGrossEarnings : 1);
+                  const pct = (totalFixedExpenses / denom) * 100;
+                  return (
+                    <span className={`text-sm font-extrabold font-mono ${pct > 50 ? 'text-amber-400' : 'text-zinc-200'}`}>
+                      {pct.toFixed(1)}% do faturamento projetado
+                    </span>
+                  );
+                })()}
               </div>
             </div>
 
@@ -6050,42 +6082,10 @@ export default function App() {
                 Relatórios & Análises Financeiras
               </h2>
               <p className="text-xs text-zinc-400">
-                {isAllYear ? `Consolidado anual de ${selectedYear}` : `Mês de ${MONTH_NAMES[selectedMonth - 1]} de ${selectedYear}`}
+                {filterStartDate || filterEndDate 
+                  ? `Período customizado: ${filterStartDate ? filterStartDate.split('-').reverse().join('/') : 'Início'} até ${filterEndDate ? filterEndDate.split('-').reverse().join('/') : 'Fim'}`
+                  : (isAllYear ? `Consolidado anual de ${selectedYear}` : `Mês de ${MONTH_NAMES[selectedMonth - 1]} de ${selectedYear}`)}
               </p>
-              <div className="text-[10px] text-zinc-500 mt-1">
-                Status Permissão: {notificationPermission}
-              </div>
-              <button
-                onClick={async () => {
-                  if (!Capacitor.isNativePlatform()) {
-                    alert('Notificações locais só funcionam no aplicativo nativo (Android/iOS).');
-                    return;
-                  }
-                  try {
-                    const { LocalNotifications } = await import('@capacitor/local-notifications');
-                    await LocalNotifications.schedule({
-                      notifications: [
-                        {
-                          title: 'Controle Diário',
-                          body: 'Notificação do Controle Diário ativa e funcionando!',
-                          id: 999,
-                          channelId: 'padrao',
-                          smallIcon: 'ic_stat_icon',
-                          largeIcon: 'ic_launcher',
-                          iconColor: '#10b981',
-                          schedule: { at: new Date(Date.now() + 5000) }
-                        }
-                      ]
-                    });
-                    alert('Notificação agendada para daqui a 5 segundos!');
-                  } catch (e) {
-                    alert('Erro ao agendar notificação: ' + e);
-                  }
-                }}
-                className="mt-2 text-[10px] bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-1.5 rounded-lg font-bold transition-all cursor-pointer"
-              >
-                Testar notificação
-              </button>
             </div>
           </div>
 
@@ -6097,6 +6097,391 @@ export default function App() {
               </span>
             </div>
           </div>
+        </div>
+
+        {/* Filtro de Despesas por Tópico & Data */}
+        <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl p-5 shadow-lg space-y-4">
+          
+          {/* 1. Date Range Picker Header */}
+          <div className="bg-zinc-950/70 border border-zinc-800 p-3.5 rounded-xl space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-zinc-200 flex items-center gap-2">
+                <CalendarIcon className="w-4 h-4 text-emerald-400" />
+                Filtrar por Período de Datas
+              </span>
+              {(filterStartDate || filterEndDate) && (
+                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-bold border border-emerald-500/30">
+                  Filtro Ativo
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-[10px] text-zinc-400 uppercase font-bold">Data Inicial</label>
+                <input
+                  type="date"
+                  value={filterStartDate}
+                  onChange={(e) => setFilterStartDate(e.target.value)}
+                  className="w-full bg-[#11141a] border border-zinc-800 rounded-lg text-xs py-2 px-2.5 text-zinc-100 focus:outline-none focus:border-emerald-500 font-mono"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] text-zinc-400 uppercase font-bold">Data Final</label>
+                <input
+                  type="date"
+                  value={filterEndDate}
+                  onChange={(e) => setFilterEndDate(e.target.value)}
+                  className="w-full bg-[#11141a] border border-zinc-800 rounded-lg text-xs py-2 px-2.5 text-zinc-100 focus:outline-none focus:border-emerald-500 font-mono"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setFilterStartDate('');
+                  setFilterEndDate('');
+                }}
+                className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-750 text-zinc-300 text-[10px] font-bold rounded-lg transition-all cursor-pointer"
+              >
+                Mês Selecionado ({MONTH_NAMES[selectedMonth - 1]})
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const today = new Date();
+                  const pad = (n: number) => String(n).padStart(2, '0');
+                  const endDate = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+                  const past = new Date();
+                  past.setDate(today.getDate() - 30);
+                  const startDate = `${past.getFullYear()}-${pad(past.getMonth() + 1)}-${pad(past.getDate())}`;
+                  setFilterStartDate(startDate);
+                  setFilterEndDate(endDate);
+                }}
+                className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-750 text-zinc-300 text-[10px] font-bold rounded-lg transition-all cursor-pointer"
+              >
+                Últimos 30 Dias
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFilterStartDate(`${selectedYear}-01-01`);
+                  setFilterEndDate(`${selectedYear}-12-31`);
+                }}
+                className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-750 text-zinc-300 text-[10px] font-bold rounded-lg transition-all cursor-pointer"
+              >
+                Ano Todo ({selectedYear})
+              </button>
+              {(filterStartDate || filterEndDate) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFilterStartDate('');
+                    setFilterEndDate('');
+                  }}
+                  className="px-2.5 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 text-[10px] font-bold rounded-lg border border-rose-500/30 transition-all cursor-pointer ml-auto"
+                >
+                  Limpar Datas
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* 2. Topic Selector Buttons */}
+          <div className="space-y-2 border-b border-zinc-800 pb-3">
+            <div className="flex items-center gap-2">
+              <Filter className="w-4 h-4 text-emerald-400" />
+              <h4 className="text-xs font-bold text-zinc-200 uppercase tracking-wider">Tópicos de Despesas</h4>
+            </div>
+
+            <div className="space-y-2">
+              {/* Geral */}
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { id: 'all', label: '🌐 Todos' },
+                  { id: 'energia', label: carProfile.vehicleType === 'eletrico' ? '⚡ Energia' : '⛽ Combustível' },
+                  { id: 'diaria', label: '🚘 Diária Carro' },
+                  { id: 'fixas', label: '📄 Contas Fixas' }
+                ].map(topic => (
+                  <button
+                    key={topic.id}
+                    onClick={() => setSelectedExpenseTopicFilter(topic.id)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                      selectedExpenseTopicFilter === topic.id
+                        ? 'bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/20'
+                        : 'bg-zinc-800/80 hover:bg-zinc-800 text-zinc-300 border border-zinc-700/60'
+                    }`}
+                  >
+                    {topic.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Alimentação */}
+              <div className="bg-zinc-950/40 p-2 rounded-xl border border-zinc-850 space-y-1">
+                <span className="text-[10px] font-extrabold text-amber-400 uppercase block tracking-wider">🍴 Alimentação</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { id: 'alim_todos', label: 'Tudo de Alimentação' },
+                    { id: 'alim_cafe', label: '☕ Café da Manhã' },
+                    { id: 'alim_almoco', label: '🍲 Almoço' },
+                    { id: 'alim_lanche', label: '🍰 Café da Tarde' },
+                    { id: 'alim_jantar', label: '🍔 Jantar' }
+                  ].map(topic => (
+                    <button
+                      key={topic.id}
+                      onClick={() => setSelectedExpenseTopicFilter(topic.id)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                        selectedExpenseTopicFilter === topic.id
+                          ? 'bg-amber-500 text-zinc-950 font-bold shadow-md shadow-amber-500/20'
+                          : 'bg-zinc-900 hover:bg-zinc-850 text-zinc-300 border border-zinc-800'
+                      }`}
+                    >
+                      {topic.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Manutenção & Extras do Carro */}
+              <div className="bg-zinc-950/40 p-2 rounded-xl border border-zinc-850 space-y-1">
+                <span className="text-[10px] font-extrabold text-cyan-400 uppercase block tracking-wider">🚗 Manutenção & Extras</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { id: 'car_todos', label: 'Tudo do Carro' },
+                    { id: 'car_aspiracao', label: '🧹 Aspiração' },
+                    { id: 'car_pedagio', label: '📍 Pedágios' },
+                    { id: 'car_lavajato', label: '🚿 Lava-jato' },
+                    { id: 'car_manutencao', label: '🛠️ Manutenção Extra' },
+                    { id: 'car_outros', label: '⚙️ Outros Extra' }
+                  ].map(topic => (
+                    <button
+                      key={topic.id}
+                      onClick={() => setSelectedExpenseTopicFilter(topic.id)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                        selectedExpenseTopicFilter === topic.id
+                          ? 'bg-cyan-500 text-zinc-950 font-bold shadow-md shadow-cyan-500/20'
+                          : 'bg-zinc-900 hover:bg-zinc-850 text-zinc-300 border border-zinc-800'
+                      }`}
+                    >
+                      {topic.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 3. Filtered Results View */}
+          {(() => {
+            const activeLogs = (filterStartDate || filterEndDate)
+              ? logs.filter(l => (!filterStartDate || l.date >= filterStartDate) && (!filterEndDate || l.date <= filterEndDate))
+              : filteredLogs;
+
+            const formatD = (dStr: string) => dStr.split('-').reverse().join('/');
+
+            // Render subtopic content
+            if (selectedExpenseTopicFilter === 'all') {
+              let totEng = 0;
+              let totDia = 0;
+              let totFood = 0;
+              let totCar = 0;
+              activeLogs.forEach(l => {
+                totEng += (l.custoEnergia || 0);
+                totDia += (l.diariaCarro || 0);
+                totFood += (l.foodExpenses?.lunch || 0) + (l.foodExpenses?.dinner || 0) + (l.foodExpenses?.snacks || 0) + (l.foodExpenses?.coffee || 0);
+                totCar += (l.carExpenses?.wash || 0) + (l.carExpenses?.toll || 0) + (l.carExpenses?.maintenance || 0) + (l.carExpenses?.parking || 0) + (l.carExpenses?.other || 0);
+              });
+              const totalAll = totEng + totDia + totFood + totCar + totalFixedExpenses;
+
+              return (
+                <div className="space-y-3 pt-1">
+                  <div className="flex justify-between items-center bg-zinc-950/80 p-3 rounded-xl border border-zinc-800">
+                    <span className="text-xs font-bold text-zinc-200">Soma de Todas as Despesas Filtradas:</span>
+                    <span className="font-mono text-sm font-black text-emerald-400">{formatBRL(totalAll)}</span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
+                    <div className="bg-zinc-950/60 p-2.5 rounded-xl border border-zinc-850 space-y-1">
+                      <span className="text-[10px] text-zinc-500 font-sans block">ENERGIA</span>
+                      <span className="font-bold text-amber-400">{formatBRL(totEng)}</span>
+                    </div>
+                    <div className="bg-zinc-950/60 p-2.5 rounded-xl border border-zinc-850 space-y-1">
+                      <span className="text-[10px] text-zinc-500 font-sans block">DIÁRIAS CARRO</span>
+                      <span className="font-bold text-blue-400">{formatBRL(totDia)}</span>
+                    </div>
+                    <div className="bg-zinc-950/60 p-2.5 rounded-xl border border-zinc-850 space-y-1">
+                      <span className="text-[10px] text-zinc-500 font-sans block">ALIMENTAÇÃO</span>
+                      <span className="font-bold text-orange-400">{formatBRL(totFood)}</span>
+                    </div>
+                    <div className="bg-zinc-950/60 p-2.5 rounded-xl border border-zinc-850 space-y-1">
+                      <span className="text-[10px] text-zinc-500 font-sans block">EXTRAS CARRO</span>
+                      <span className="font-bold text-cyan-400">{formatBRL(totCar)}</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+
+            if (selectedExpenseTopicFilter === 'energia') {
+              const list = activeLogs.filter(l => (l.custoEnergia || 0) > 0);
+              const total = list.reduce((a, b) => a + (b.custoEnergia || 0), 0);
+              return (
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center bg-zinc-950/60 p-3 rounded-xl border border-zinc-850">
+                    <span className="text-xs font-bold text-zinc-300">Total de {carProfile.vehicleType === 'eletrico' ? 'Energia / Recargas' : 'Combustível'}:</span>
+                    <span className="font-mono text-sm font-black text-amber-400">{formatBRL(total)}</span>
+                  </div>
+                  <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+                    {list.map(l => (
+                      <div key={l.date} className="flex justify-between items-center text-xs p-2.5 bg-zinc-950/40 rounded-lg border border-zinc-850">
+                        <span className="font-mono text-zinc-300 font-bold">{formatD(l.date)}</span>
+                        <span className="font-mono font-bold text-amber-400">{formatBRL(l.custoEnergia)}</span>
+                      </div>
+                    ))}
+                    {list.length === 0 && <p className="text-xs text-zinc-500 text-center py-4">Nenhum registro encontrado no período.</p>}
+                  </div>
+                </div>
+              );
+            }
+
+            if (selectedExpenseTopicFilter === 'diaria') {
+              const list = activeLogs.filter(l => (l.diariaCarro || 0) > 0);
+              const total = list.reduce((a, b) => a + (b.diariaCarro || 0), 0);
+              return (
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center bg-zinc-950/60 p-3 rounded-xl border border-zinc-850">
+                    <span className="text-xs font-bold text-zinc-300">Total de Diárias do Carro:</span>
+                    <span className="font-mono text-sm font-black text-blue-400">{formatBRL(total)}</span>
+                  </div>
+                  <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+                    {list.map(l => (
+                      <div key={l.date} className="flex justify-between items-center text-xs p-2.5 bg-zinc-950/40 rounded-lg border border-zinc-850">
+                        <span className="font-mono text-zinc-300 font-bold">{formatD(l.date)}</span>
+                        <span className="font-mono font-bold text-blue-400">{formatBRL(l.diariaCarro)}</span>
+                      </div>
+                    ))}
+                    {list.length === 0 && <p className="text-xs text-zinc-500 text-center py-4">Nenhum registro encontrado no período.</p>}
+                  </div>
+                </div>
+              );
+            }
+
+            // Food Filters
+            if (selectedExpenseTopicFilter.startsWith('alim_')) {
+              const subKey = selectedExpenseTopicFilter.replace('alim_', '');
+              const getVal = (l: DailyLog) => {
+                const f = l.foodExpenses || { lunch: 0, dinner: 0, snacks: 0, coffee: 0 };
+                if (subKey === 'cafe') return f.snacks || 0;
+                if (subKey === 'almoco') return f.lunch || 0;
+                if (subKey === 'lanche') return f.coffee || 0;
+                if (subKey === 'jantar') return f.dinner || 0;
+                return (f.lunch || 0) + (f.dinner || 0) + (f.snacks || 0) + (f.coffee || 0);
+              };
+
+              const list = activeLogs.filter(l => getVal(l) > 0);
+              const total = list.reduce((a, b) => a + getVal(b), 0);
+              const labels: Record<string, string> = {
+                todos: 'Tudo de Alimentação',
+                cafe: '☕ Café da Manhã',
+                almoco: '🍲 Almoço',
+                lanche: '🍰 Café da Tarde / Lanches',
+                jantar: '🍔 Jantar'
+              };
+
+              return (
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center bg-zinc-950/60 p-3 rounded-xl border border-zinc-850">
+                    <span className="text-xs font-bold text-zinc-300">Total - {labels[subKey] || 'Alimentação'}:</span>
+                    <span className="font-mono text-sm font-black text-orange-400">{formatBRL(total)}</span>
+                  </div>
+                  <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+                    {list.map(l => (
+                      <div key={l.date} className="flex justify-between items-center text-xs p-2.5 bg-zinc-950/40 rounded-lg border border-zinc-850">
+                        <span className="font-mono text-zinc-300 font-bold">{formatD(l.date)}</span>
+                        <span className="font-mono font-bold text-orange-400">{formatBRL(getVal(l))}</span>
+                      </div>
+                    ))}
+                    {list.length === 0 && <p className="text-xs text-zinc-500 text-center py-4">Nenhum registro encontrado no período.</p>}
+                  </div>
+                </div>
+              );
+            }
+
+            // Car Extras Filters
+            if (selectedExpenseTopicFilter.startsWith('car_')) {
+              const subKey = selectedExpenseTopicFilter.replace('car_', '');
+              const getVal = (l: DailyLog) => {
+                const c = l.carExpenses || { wash: 0, toll: 0, maintenance: 0, parking: 0, publicCharging: 0, other: 0 };
+                if (subKey === 'aspiracao') return c.parking || 0;
+                if (subKey === 'pedagio') return c.toll || 0;
+                if (subKey === 'lavajato') return c.wash || 0;
+                if (subKey === 'manutencao') return c.maintenance || 0;
+                if (subKey === 'outros') return c.other || 0;
+                return (c.wash || 0) + (c.toll || 0) + (c.maintenance || 0) + (c.parking || 0) + (c.other || 0);
+              };
+
+              const list = activeLogs.filter(l => getVal(l) > 0);
+              const total = list.reduce((a, b) => a + getVal(b), 0);
+              const labels: Record<string, string> = {
+                todos: 'Tudo de Extras do Carro',
+                aspiracao: '🧹 Aspiração',
+                pedagio: '📍 Pedágios',
+                lavajato: '🚿 Lava-jato / Limpeza',
+                manutencao: '🛠️ Manutenção Extra',
+                outros: '⚙️ Outros Extra'
+              };
+
+              return (
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center bg-zinc-950/60 p-3 rounded-xl border border-zinc-850">
+                    <span className="text-xs font-bold text-zinc-300">Total - {labels[subKey] || 'Extras do Carro'}:</span>
+                    <span className="font-mono text-sm font-black text-cyan-400">{formatBRL(total)}</span>
+                  </div>
+                  <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+                    {list.map(l => (
+                      <div key={l.date} className="flex justify-between items-center text-xs p-2.5 bg-zinc-950/40 rounded-lg border border-zinc-850">
+                        <span className="font-mono text-zinc-300 font-bold">{formatD(l.date)}</span>
+                        <span className="font-mono font-bold text-cyan-400">{formatBRL(getVal(l))}</span>
+                      </div>
+                    ))}
+                    {list.length === 0 && <p className="text-xs text-zinc-500 text-center py-4">Nenhum registro encontrado no período.</p>}
+                  </div>
+                </div>
+              );
+            }
+
+            if (selectedExpenseTopicFilter === 'fixas') {
+              return (
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center bg-zinc-950/60 p-3 rounded-xl border border-zinc-850">
+                    <span className="text-xs font-bold text-zinc-300">Total de Contas & Despesas Fixas no Mês:</span>
+                    <span className="font-mono text-sm font-black text-rose-400">{formatBRL(totalFixedExpenses)}</span>
+                  </div>
+                  <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+                    {fixedExpenses.map(item => (
+                      <div key={item.id} className="flex justify-between items-center text-xs p-2.5 bg-zinc-950/40 rounded-lg border border-zinc-850">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-zinc-200">{item.name}</span>
+                          {item.installments && (
+                            <span className="bg-zinc-800 text-zinc-400 text-[9px] px-1.5 py-0.5 rounded font-mono">{item.installments}</span>
+                          )}
+                        </div>
+                        <span className="font-mono font-bold text-rose-400">{formatBRL(item.value)}</span>
+                      </div>
+                    ))}
+                    {fixedExpenses.length === 0 && (
+                      <p className="text-xs text-zinc-500 text-center py-4">Nenhuma despesa fixa cadastrada neste mês.</p>
+                    )}
+                  </div>
+                </div>
+              );
+            }
+
+            return null;
+          })()}
         </div>
 
         {/* Core KPIs Metrics Grid */}
@@ -9179,8 +9564,8 @@ export default function App() {
                 e.preventDefault();
                 // Explicitly save on submit to ensure persistence
                 localStorage.setItem('driver_car_profile_v2', JSON.stringify(carProfile));
-                // Auto-sync custom work days to logs
-                handleApplyMonthlyCarRateToAllDays(selectedMonth, selectedYear, carProfile.monthlyCarExpense || 0);
+                // Auto-sync rates via automatic recalculation
+                setLogs(prev => recalculateAllMonthsRates(prev, fixedExpensesByMonth, carProfile));
                 setIsCarModalOpen(false);
                 setSweepNotification(`Dados do veículo ${carProfile.modelName || 'cadastrado'} salvos com sucesso!`);
                 setTimeout(() => setSweepNotification(null), 4000);
