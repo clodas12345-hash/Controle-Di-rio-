@@ -509,6 +509,97 @@ export const generateCleanEmptyYearLogs = (year: number = 2026): DailyLog[] => {
   return cleanLogs.sort((a, b) => a.date.localeCompare(b.date));
 };
 
+// Generates complete launched data text for system notifications
+export const generateLogSummaryNotificationText = (log: DailyLog): string => {
+  const [y, m, d] = log.date.split('-');
+  const dateFormatted = `${d}/${m}/${y}`;
+
+  if (log.isDayOff && (log.kmRodado || 0) === 0 && ((log.appUber?.earnings || 0) + (log.app99?.earnings || 0) + (log.appParticular?.earnings || 0)) === 0) {
+    return `✓ Dia ${dateFormatted} registrado como Folga / Sem rodagem.`;
+  }
+
+  const fmt = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const lines: string[] = [];
+  lines.push(`✓ Lançamento de ${dateFormatted} salvo com sucesso!`);
+
+  // 1. Rodagem & Bateria
+  let rodagemStr = `🚘 Rodagem: ${log.kmRodado || 0} KM`;
+  if (log.sobrouBateria !== null && log.sobrouBateria !== undefined && log.sobrouBateria > 0) {
+    rodagemStr += ` • Bateria: ${log.sobrouBateria}%`;
+  }
+  lines.push(rodagemStr);
+
+  // 2. Ganhos por App
+  const uTotal = (log.appUber?.earnings || 0) + (log.appUber?.bonus || 0) + (log.appUber?.ajuste || 0);
+  const uRides = log.appUber?.rides || 0;
+
+  const nTotal = (log.app99?.earnings || 0) + (log.app99?.bonus || 0) + (log.app99?.ajuste || 0);
+  const nRides = log.app99?.rides || 0;
+
+  const pTotal = log.appParticular?.earnings || 0;
+  const pRides = log.appParticular?.rides || 0;
+
+  const recomp = log.recompensasExtra || 0;
+  const anjo = log.outrasFontes || log.anjo || 0;
+
+  const totalGross = uTotal + nTotal + pTotal + recomp;
+  const totalRides = uRides + nRides + pRides;
+
+  lines.push(`💰 Ganhos Totais: ${fmt(totalGross)} (${totalRides} corridas)`);
+
+  if (uTotal > 0 || uRides > 0) {
+    lines.push(`  • Uber: ${fmt(uTotal)} (${uRides} corr.)`);
+  }
+  if (nTotal > 0 || nRides > 0) {
+    lines.push(`  • 99: ${fmt(nTotal)} (${nRides} corr.)`);
+  }
+  if (pTotal > 0 || pRides > 0) {
+    lines.push(`  • Particular: ${fmt(pTotal)} (${pRides} corr.)`);
+  }
+  if (recomp > 0) {
+    lines.push(`  • Recompensas: ${fmt(recomp)}`);
+  }
+  if (anjo > 0) {
+    lines.push(`  • Outras Fontes / Anjo: ${fmt(anjo)}`);
+  }
+
+  // 3. Custos & Despesas
+  if (log.custoEnergia > 0) {
+    lines.push(`⚡ Energia/Combustível: ${fmt(log.custoEnergia)}`);
+  }
+
+  const foodItems: string[] = [];
+  if (log.foodExpenses?.snacks > 0) foodItems.push(`Café: ${fmt(log.foodExpenses.snacks)}`);
+  if (log.foodExpenses?.lunch > 0) foodItems.push(`Almoço: ${fmt(log.foodExpenses.lunch)}`);
+  if (log.foodExpenses?.coffee > 0) foodItems.push(`Café Tarde: ${fmt(log.foodExpenses.coffee)}`);
+  if (log.foodExpenses?.dinner > 0) foodItems.push(`Jantar: ${fmt(log.foodExpenses.dinner)}`);
+  const totalFood = (log.foodExpenses?.snacks || 0) + (log.foodExpenses?.lunch || 0) + (log.foodExpenses?.coffee || 0) + (log.foodExpenses?.dinner || 0);
+
+  if (totalFood > 0) {
+    lines.push(`🍽️ Alimentação: ${fmt(totalFood)}${foodItems.length > 0 ? ` (${foodItems.join(', ')})` : ''}`);
+  }
+
+  const carItems: string[] = [];
+  if (log.carExpenses?.parking > 0) carItems.push(`Aspiração: ${fmt(log.carExpenses.parking)}`);
+  if (log.carExpenses?.toll > 0) carItems.push(`Pedágios: ${fmt(log.carExpenses.toll)}`);
+  if (log.carExpenses?.wash > 0) carItems.push(`Lava-jato: ${fmt(log.carExpenses.wash)}`);
+  if (log.carExpenses?.maintenance > 0) carItems.push(`Manutenção: ${fmt(log.carExpenses.maintenance)}`);
+  if (log.carExpenses?.other > 0) carItems.push(`Outros: ${fmt(log.carExpenses.other)}`);
+  const totalCar = (log.carExpenses?.parking || 0) + (log.carExpenses?.toll || 0) + (log.carExpenses?.wash || 0) + (log.carExpenses?.maintenance || 0) + (log.carExpenses?.other || 0);
+
+  if (totalCar > 0) {
+    lines.push(`🛠️ Despesas Carro: ${fmt(totalCar)}${carItems.length > 0 ? ` (${carItems.join(', ')})` : ''}`);
+  }
+
+  // 4. Lucro Líquido
+  const totalCosts = (log.custoEnergia || 0) + (log.diariaCarro || 0) + totalFood + totalCar;
+  const netDaily = totalGross - totalCosts;
+  lines.push(`📊 Lucro Líquido: ${fmt(netDaily)}`);
+
+  return lines.join('\n');
+};
+
 // Helpers for installments and persistence
 const parseInstallmentInfo = (installments?: string) => {
   if (!installments) return null;
@@ -1047,9 +1138,9 @@ export default function App() {
       setIsEnergyCostOverridden(true);
     }
 
-    const formattedDate = targetDate.split('-').reverse().join('/');
-    setSweepNotification(`Dados do dia ${formattedDate} atualizados com sucesso pela IA!`);
-    setTimeout(() => setSweepNotification(null), 4500);
+    const summaryText = generateLogSummaryNotificationText(newLog);
+    setSweepNotification(summaryText);
+    setTimeout(() => setSweepNotification(null), 6000);
   };
 
   const handleConflictDetected = (data: ConflictData) => {
@@ -3612,9 +3703,9 @@ export default function App() {
 
     setIsHistorySectionOpen(true);
     setHighlightedRowId(targetDate);
-    const formattedDate = targetDate.split('-').reverse().join('/');
-    setSweepNotification(`✓ Lançamento de ${formattedDate} salvo com sucesso (${parsedKm} KM)!`);
-    setTimeout(() => setSweepNotification(null), 5000);
+    const summaryText = generateLogSummaryNotificationText(newLog);
+    setSweepNotification(summaryText);
+    setTimeout(() => setSweepNotification(null), 8000);
     setIsModalOpen(false);
   };
 
