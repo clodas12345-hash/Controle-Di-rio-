@@ -35,16 +35,32 @@ export async function requestNotificationPermission(): Promise<boolean> {
   return false;
 }
 
-export async function sendAppNotification(title: string, options?: { body?: string; icon?: string; tag?: string; id?: number }) {
+export async function sendAppNotification(
+  title: string, 
+  options?: { 
+    body?: string; 
+    icon?: string; 
+    tag?: string; 
+    id?: number;
+    largeBody?: string;
+    summaryText?: string;
+    inboxList?: string[];
+  }
+) {
   try {
     // 1. Android Nativo via Capacitor LocalNotifications
     if (Capacitor.isNativePlatform()) {
       try {
+        const bodyText = options?.body || '';
+        const largeText = options?.largeBody || options?.body || '';
         await LocalNotifications.schedule({
           notifications: [
             {
               title,
-              body: options?.body || '',
+              body: bodyText,
+              largeBody: largeText,
+              summaryText: options?.summaryText || 'GKD Controle Diário',
+              inboxList: options?.inboxList,
               id: options?.id || Math.floor(Math.random() * 1000000) + 1,
               smallIcon: 'ic_stat_icon',
               largeIcon: 'ic_launcher',
@@ -63,8 +79,9 @@ export async function sendAppNotification(title: string, options?: { body?: stri
     // 2. Notificação Web / PWA no navegador
     if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
       const iconUrl = options?.icon || '/Icon2.png';
+      const webBody = options?.largeBody || options?.body || '';
       new Notification(title, {
-        body: options?.body || '',
+        body: webBody,
         icon: iconUrl,
         badge: '/ic_stat_icon.png',
         tag: options?.tag || 'gkd-controle-diario',
