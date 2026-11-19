@@ -256,7 +256,9 @@ export const getMonthWorkDaysAndRate = (year: number, month: number, monthlyTota
   const daysInMonth = new Date(year, month, 0).getDate();
   let workDaysCount = 0;
 
-  if (monthLogs && monthLogs.length > 0) {
+  if (customWorkDays && customWorkDays.length > 0) {
+    workDaysCount = customWorkDays.length;
+  } else if (monthLogs && monthLogs.length > 0) {
     for (let day = 1; day <= daysInMonth; day++) {
       const pad = (n: number) => String(n).padStart(2, '0');
       const dateStr = `${year}-${pad(month)}-${pad(day)}`;
@@ -266,8 +268,6 @@ export const getMonthWorkDaysAndRate = (year: number, month: number, monthlyTota
         workDaysCount++;
       }
     }
-  } else if (customWorkDays && customWorkDays.length > 0) {
-    workDaysCount = customWorkDays.length;
   } else {
     // Default: Monday to Saturday (or all days minus Sundays)
     for (let day = 1; day <= daysInMonth; day++) {
@@ -309,11 +309,16 @@ export const recalculateAllMonthsRates = (
     const monthFixedSum = monthExpenses.reduce((sum, item) => sum + item.value, 0);
     const costToUse = monthFixedSum > 0 ? monthFixedSum : (carProf.monthlyCarExpense || 0);
 
-    const rateInfo = getMonthWorkDaysAndRate(y, m, costToUse, carProf.customWorkDays?.[mKeyPadded], allLogs);
-    const expectedDiaria = log.isDayOff ? 0 : rateInfo.dailyRate;
+    const customDays = carProf.customWorkDays?.[mKeyPadded] || carProf.customWorkDays?.[mKeyUnpadded];
+    const hasCustomDays = Boolean(customDays && customDays.length > 0);
+    const effectiveIsDayOff = hasCustomDays ? !customDays!.includes(d) : Boolean(log.isDayOff);
+
+    const rateInfo = getMonthWorkDaysAndRate(y, m, costToUse, customDays, allLogs);
+    const expectedDiaria = effectiveIsDayOff ? 0 : rateInfo.dailyRate;
 
     return {
       ...log,
+      isDayOff: effectiveIsDayOff,
       diariaCarro: expectedDiaria
     };
   });
@@ -2402,7 +2407,28 @@ export default function App() {
     }
   }, [logs]);
 
-  // Auto-recalculate diariaCarro across all months automatically based on total monthly fixed expenses and working days (!isDayOff)
+  // Keep carProfile.monthlyCarExpense synchronized with fixedExpensesByMonth of the selected month
+  useEffect(() => {
+    if ((window as any).isClearingAll) return;
+    const mKeyPadded = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
+    const mKeyUnpadded = `${selectedYear}-${selectedMonth}`;
+    const monthExpenses = (fixedExpensesByMonth[mKeyPadded] || fixedExpensesByMonth[mKeyUnpadded] || []).filter(exp => {
+      const norm = normalizeExpenseName(exp.name);
+      if (norm.includes('financiamento')) {
+        if (selectedYear < 2024 || (selectedYear === 2024 && selectedMonth < 10)) return false;
+      }
+      return true;
+    });
+    const monthFixedSum = Math.round(monthExpenses.reduce((sum, item) => sum + (item.value || 0), 0) * 100) / 100;
+    if (monthFixedSum > 0 && Math.abs((carProfile.monthlyCarExpense || 0) - monthFixedSum) > 0.01) {
+      setCarProfile(prev => ({
+        ...prev,
+        monthlyCarExpense: monthFixedSum
+      }));
+    }
+  }, [fixedExpensesByMonth, selectedYear, selectedMonth, carProfile.monthlyCarExpense]);
+
+  // Auto-recalculate diariaCarro and isDayOff across all months automatically based on total monthly fixed expenses and working days
   useEffect(() => {
     if (!logs || logs.length === 0) return;
     if ((window as any).isClearingAll) return;
@@ -2414,7 +2440,10 @@ export default function App() {
       changed = true;
     } else {
       for (let i = 0; i < logs.length; i++) {
-        if (Math.abs((recalculated[i].diariaCarro || 0) - (logs[i].diariaCarro || 0)) > 0.01) {
+        if (
+          Math.abs((recalculated[i].diariaCarro || 0) - (logs[i].diariaCarro || 0)) > 0.01 ||
+          Boolean(recalculated[i].isDayOff) !== Boolean(logs[i].isDayOff)
+        ) {
           changed = true;
           break;
         }
@@ -3265,9 +3294,7 @@ export default function App() {
     const customDays = carProfile.customWorkDays?.[monthKeyPadded] || carProfile.customWorkDays?.[monthKeyUnpadded] || [];
     const isCustomWorkingDay = (customDays && customDays.length > 0) ? customDays.includes(d) : (new Date(y, m - 1, d).getDay() !== 0);
 
-    const mExpenses = fixedExpensesByMonth[monthKeyPadded] || fixedExpensesByMonth[monthKeyUnpadded] || [];
-    const mTotal = mExpenses.reduce((acc, curr) => acc + (curr.value || 0), 0);
-    const effectiveCost = carProfile.monthlyCarExpense || 0;
+    const effectiveCost = getEffectiveMonthlyCost(y, m);
 
     const { dailyRate } = getMonthWorkDaysAndRate(y, m, effectiveCost, customDays);
     const defaultValKwh = String(carProfile.kwhCostRate || (carProfile.vehicleType === 'eletrico' ? 1.05 : 5.50)).replace('.', ',');
@@ -3706,6 +3733,42 @@ export default function App() {
         }
         return updated;
       });
+    }
+
+    // Synchronize customWorkDays if the user toggled isDayOff for this date
+    const [tY, tM, tD] = targetDate.split('-').map(Number);
+    if (tY && tM && tD) {
+      const tMonthKey = `${tY}-${String(tM).padStart(2, '0')}`;
+      const existingCustomDays = carProfile.customWorkDays?.[tMonthKey];
+      const isDefaultSunday = new Date(tY, tM - 1, tD).getDay() === 0;
+      const shouldSyncCustom = (existingCustomDays && existingCustomDays.length > 0) || (newLog.isDayOff !== isDefaultSunday);
+
+      if (shouldSyncCustom) {
+        let baseDays = existingCustomDays && existingCustomDays.length > 0 ? [...existingCustomDays] : [];
+        if (baseDays.length === 0) {
+          const daysInTargetMonth = new Date(tY, tM, 0).getDate();
+          for (let dNum = 1; dNum <= daysInTargetMonth; dNum++) {
+            const dStr = `${tY}-${String(tM).padStart(2, '0')}-${String(dNum).padStart(2, '0')}`;
+            const existingDayLog = logs.find(l => l.date === dStr);
+            const isOff = existingDayLog ? Boolean(existingDayLog.isDayOff) : (new Date(tY, tM - 1, dNum).getDay() === 0);
+            if (!isOff) baseDays.push(dNum);
+          }
+        }
+        const isInCustom = baseDays.includes(tD);
+        const shouldBeInCustom = !newLog.isDayOff;
+        if (isInCustom !== shouldBeInCustom) {
+          const updatedCustomDays = shouldBeInCustom
+            ? [...baseDays, tD].sort((a, b) => a - b)
+            : baseDays.filter(dayNum => dayNum !== tD);
+          setCarProfile(prev => ({
+            ...prev,
+            customWorkDays: {
+              ...(prev.customWorkDays || {}),
+              [tMonthKey]: updatedCustomDays
+            }
+          }));
+        }
+      }
     }
 
     setLogs(prev => {
@@ -4180,10 +4243,10 @@ export default function App() {
       const isSunday = new Date(selectedYear, selectedMonth - 1, d).getDay() === 0;
       
       let isOff = false;
-      if (log) {
-        isOff = Boolean(log.isDayOff);
-      } else if (customDays && customDays.length > 0) {
+      if (customDays && customDays.length > 0) {
         isOff = !customDays.includes(d);
+      } else if (log) {
+        isOff = Boolean(log.isDayOff);
       } else {
         isOff = isSunday;
       }
@@ -5368,7 +5431,7 @@ export default function App() {
                         const dayAnjo = log ? (log.anjo !== undefined ? log.anjo : (log.outrasFontes || 0)) : 0;
                         const carExpensesSum = log ? ((log.carExpenses?.wash || 0) + (log.carExpenses?.toll || 0) + (log.carExpenses?.maintenance || 0) + (log.carExpenses?.parking || 0) + (log.carExpenses?.other || 0)) : 0;
                         const foodExpensesSum = log ? ((log.foodExpenses?.lunch || 0) + (log.foodExpenses?.dinner || 0) + (log.foodExpenses?.snacks || 0) + (log.foodExpenses?.coffee || 0)) : 0;
-                        const hasActivity = log ? (gross > 0 || dayAnjo > 0 || (log.kmRodado || 0) > 0 || (log.diariaCarro || 0) > 0 || (log.custoEnergia || 0) > 0 || carExpensesSum > 0 || foodExpensesSum > 0) : false;
+                        const hasActivity = log ? (gross > 0 || dayAnjo > 0 || (log.kmRodado || 0) > 0 || (log.custoEnergia || 0) > 0 || carExpensesSum > 0 || foodExpensesSum > 0) : false;
                         const isTargetHit = gross >= 500;
                         const weekAvgPasses = weekPassesMap.get(dateStr) || false;
 
@@ -5437,7 +5500,7 @@ export default function App() {
                               </div>
                             </div>
 
-                            <div className="text-[10px] sm:text-[11px] font-black text-right tracking-tight leading-tight">
+                            <div className={`${gross >= 1000 ? 'text-[9px] sm:text-[11px]' : 'text-[10px] sm:text-[11px]'} font-black text-right tracking-tight leading-tight`}>
                               {dayTextElement}
                             </div>
                           </button>
@@ -9963,9 +10026,17 @@ export default function App() {
 
                 <div className="bg-[#12141c] border border-purple-900/40 rounded-2xl p-4 space-y-6">
                   {(() => {
-                    const currentCost = carProfile.monthlyCarExpense ?? 0;
-
                     const monthKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
+                    const monthFixedList = (fixedExpensesByMonth[monthKey] || fixedExpensesByMonth[`${selectedYear}-${selectedMonth}`] || []).filter(exp => {
+                      const norm = normalizeExpenseName(exp.name);
+                      if (norm.includes('financiamento')) {
+                        if (selectedYear < 2024 || (selectedYear === 2024 && selectedMonth < 10)) return false;
+                      }
+                      return true;
+                    });
+                    const monthFixedSum = Math.round(monthFixedList.reduce((acc, item) => acc + (item.value || 0), 0) * 100) / 100;
+                    const currentCost = monthFixedSum > 0 ? monthFixedSum : (carProfile.monthlyCarExpense ?? 0);
+
                     let selectedDays = carProfile.customWorkDays?.[monthKey];
                     // If no days are explicitly saved yet for this month, default to Mon-Sat visually
                     if (!selectedDays || selectedDays.length === 0) {
@@ -9987,6 +10058,21 @@ export default function App() {
                     for (let i = 0; i < firstDayOfMonth; i++) calendarDays.push(null);
                     for (let i = 1; i <= daysInMonth; i++) calendarDays.push(i);
 
+                    const syncMonthLogsWithDays = (workDaysList: number[]) => {
+                      setLogs(prevLogs => prevLogs.map(log => {
+                        const [ly, lm, ld] = log.date.split('-').map(Number);
+                        if (ly === selectedYear && lm === selectedMonth) {
+                          const isOff = !workDaysList.includes(ld);
+                          return {
+                            ...log,
+                            isDayOff: isOff,
+                            diariaCarro: isOff ? 0 : getMonthWorkDaysAndRate(selectedYear, selectedMonth, currentCost, workDaysList).dailyRate
+                          };
+                        }
+                        return log;
+                      }));
+                    };
+
                     const toggleDay = (day: number) => {
                       const currentDays = selectedDays;
                       let newDays;
@@ -10003,6 +10089,7 @@ export default function App() {
                           [monthKey]: newDays
                         }
                       }));
+                      syncMonthLogsWithDays(newDays);
                     };
 
                     return (
@@ -10049,6 +10136,7 @@ export default function App() {
                                   ...prev,
                                   customWorkDays: { ...(prev.customWorkDays || {}), [monthKey]: monSat }
                                 }));
+                                syncMonthLogsWithDays(monSat);
                               }}
                               className="text-purple-400 hover:underline font-bold not-italic"
                             >
@@ -10062,7 +10150,11 @@ export default function App() {
                             <label className="text-xs font-semibold text-zinc-200">
                               Despesa Total do Mês ({MONTH_NAMES[selectedMonth - 1]}/{selectedYear})
                             </label>
-                            {currentCost === 0 && (
+                            {monthFixedSum > 0 ? (
+                              <span className="text-[10px] bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">
+                                Contas Fixas
+                              </span>
+                            ) : currentCost === 0 ? (
                               <button
                                 type="button"
                                 onClick={() => setCarProfile(prev => ({ ...prev, monthlyCarExpense: 7093.05 }))}
@@ -10071,20 +10163,29 @@ export default function App() {
                                 <Zap className="w-3 h-3" />
                                 <span>Sugerir Padrão: R$ 7.093,05</span>
                               </button>
-                            )}
+                            ) : null}
                           </div>
 
                           <div className="relative">
                             <input
                               type="text"
                               inputMode="numeric"
-                              value={carProfile.monthlyCarExpense ? formatMoneyValue(carProfile.monthlyCarExpense) : ''}
-                              onChange={(e) => handleCurrencyChange(e.target.value, (val) => setCarProfile(prev => ({ ...prev, monthlyCarExpense: parseNum(val) })))}
+                              readOnly={monthFixedSum > 0}
+                              value={currentCost ? formatMoneyValue(currentCost) : ''}
+                              onChange={(e) => {
+                                if (monthFixedSum > 0) return;
+                                handleCurrencyChange(e.target.value, (val) => setCarProfile(prev => ({ ...prev, monthlyCarExpense: parseNum(val) })));
+                              }}
                               placeholder="0,00"
-                              className="w-full bg-zinc-950 border border-purple-900/60 focus:border-purple-400 rounded-xl px-3.5 py-2.5 text-sm font-mono font-bold text-purple-200 outline-none transition-colors"
+                              className={`w-full bg-zinc-950 border border-purple-900/60 focus:border-purple-400 rounded-xl px-3.5 py-2.5 text-sm font-mono font-bold text-purple-200 outline-none transition-colors ${monthFixedSum > 0 ? 'opacity-85 cursor-not-allowed' : ''}`}
                             />
                             <span className="absolute right-3.5 top-2.5 text-xs text-purple-400 font-mono font-bold">R$ / MÊS</span>
                           </div>
+                          {monthFixedSum > 0 && (
+                            <p className="text-[10px] text-zinc-500 mt-1">
+                              Soma automática das Contas Fixas de {MONTH_NAMES[selectedMonth - 1]}/{selectedYear} (edite na aba Contas).
+                            </p>
+                          )}
                         </div>
 
                         {/* Dynamic Month Breakdown Card */}
